@@ -88,26 +88,6 @@ def rotate_bound(image, angle):
     return cv2.warpAffine(image, M, (nW, nH))
 
 
-class AngleFilter:
-    def __init__(self, freq):
-        self.freq = freq
-        self.last_sine = 0
-        self.last_cos = 0
-        self.angle = 0
-
-    def update(self, new_angle):
-        self.last_sine = self.freq * self.last_sine + (1 - self.freq) * math.sin(new_angle)
-        self.last_cos = self.freq * self.last_cos + (1 - self.freq) * math.cos(new_angle)
-        self.angle = math.atan2(self.last_sine, self.last_cos)
-        return self.angle
-
-    def get_angle(self, degrees=True):
-        if degrees:
-            return self.angle * (180.0 / math.pi)
-        else:
-            return self.angle
-
-
 class Sensor:
     def __init__(self, url):
         self.url = url
