@@ -12,6 +12,7 @@ class SerialStream:
         self.thread = Thread(target=self.run)
         self.data = []
         self.str = ""
+        self.reading = False
         self.terminator = terminator.encode(self.encoding)
 
     def open(self):
@@ -28,14 +29,17 @@ class SerialStream:
     def run(self):
         while not self.thread_cancelled:
             try:
-                self.ser.write(self.char)
-                self.ser.flush()
+                if not self.reading:
+                    self.ser.write(self.char)
+                    self.ser.flush()
+                    self.reading = True
                 return_val = self.ser.read(self.ser.in_waiting)
                 newline_idx = return_val.find(self.terminator)
                 if newline_idx != -1:
                     self.str += return_val[:newline_idx]
                     self.data.append(self.str.decode(self.encoding))
                     self.str = return_val[newline_idx+1:]
+                    self.reading = False
                 elif len(return_val) > 0:
                     self.str += return_val
             except ThreadError:
