@@ -76,4 +76,8 @@ class CameraSensors:
             self.update_sensor("accel", sensors_data)
             ax, ay, az = self.get_sensor("accel").value
             yaw = math.atan2(ax, ay) * (180 / math.pi)
+            pitch = math.atan2(ay, math.sqrt(math.pow(ax, 2) + math.pow(az, 2))) * (180 / math.pi)
+            roll = math.atan2(ax, az) * (180 / math.pi)
             self.set_sensor("rotation", yaw)
+            self.set_sensor("pitch", pitch)
+            self.set_sensor("roll", roll)

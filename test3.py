@@ -2,53 +2,30 @@ import cv2
 from camera_sensors import CameraSensors
 from ipcamutil import Cam
 import numpy as np
+from imutils import rotate_img
+from imutils import resize_img
 
-MIN_AREA = 5
+MIN_AREA = 10
 NUM_PXS = 200
 
-ipcamera_url = "http://192.168.8.100:8080/"
-cam = Cam(ipcamera_url)
+# ipcamera_url = "http://192.168.8.100:8080/"
+ipcam1_url = "http://192.168.8.112:8080/"
+ipcam2_url = "http://192.168.8.100:8080/"
+
+cam = Cam(ipcam1_url)
 cam.start()
-sensor = CameraSensors(ipcamera_url)
+sensor = CameraSensors(ipcam1_url)
 
-cam2 = Cam("http://192.168.8.112:8080/")
+cam2 = Cam(ipcam2_url)
 cam2.start()
-
-
-def rotate_bound(image, angle):
-    # grab the dimensions of the image and then determine the
-    # center
-    (h, w) = image.shape[:2]
-    (cX, cY) = (w // 2, h // 2)
-
-    # grab the rotation matrix (applying the negative of the
-    # angle to rotate clockwise), then grab the sine and cosine
-    # (i.e., the rotation components of the matrix)
-    M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
-    cos = np.abs(M[0, 0])
-    sin = np.abs(M[0, 1])
-
-    """# compute the new bounding dimensions of the image
-    nW = int((h * sin) + (w * cos))
-    nH = int((h * cos) + (w * sin))
-
-    # adjust the rotation matrix to take into account translation
-    M[0, 2] += (nW / 2) - cX
-    M[1, 2] += (nH / 2) - cY"""
-
-    nW = image.shape[1]
-    nH = image.shape[0]
-
-    # perform the actual rotation and return the image
-    return cv2.warpAffine(image, M, (nW, nH))
 
 
 def find_marker(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)[:, :, 0]
-    cv2.GaussianBlur(gray, (7, 7), 0)
+    cv2.GaussianBlur(gray, (13, 13), 0)
 
     # Find brightest pixels
-    _, thresh_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    _, thresh_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
 
     max_search = cv2.bitwise_and(gray, gray, mask=thresh_mask)
     thresh = np.zeros(gray.shape, np.uint8)
@@ -74,7 +51,32 @@ def find_marker(frame):
     return False, None, None
 
 
+class Marker:
+    def __init__(self, smoothing):
+        self.loc = np.float64([0, 0, 0])
+        self.loc_set = False
+        self.dest = np.float64([0, 0, 0])
+        self.smoothing = smoothing
+
+    def set_dest(self, dest):
+        self.dest = dest
+        if not self.loc_set:
+            self.loc = self.dest
+            self.loc_set = True
+
+    def update(self):
+        if self.smoothing < 1:
+            self.smoothing = 1
+        self.loc += (self.dest - self.loc) / self.smoothing
+
+marker = Marker(1)
+loc_mat = np.zeros((640, 1200, 3), np.uint8)
+img_size_set = False
+prevxd, prevyd = None, None
+prev_set = False
+
 then = cv2.getTickCount()
+timer = 0
 while True:
     now = cv2.getTickCount()
     delta = ((now - then) / cv2.getTickFrequency())
@@ -86,49 +88,75 @@ while True:
     y, z = None, None
     if cam.is_opened():
         frame = cam.get_frame()
-        frame = rotate_bound(frame, -sensor.get_sensor("rotation").value + 90)
-        cv2.imshow("Raw camera feed", frame)
+        frame = rotate_img(frame, -sensor.get_sensor("rotation").value + 90)
+        # cv2.imshow("Raw camera feed", frame)
 
         ret, xm, ym = find_marker(frame)
         contour_mat = frame.copy()
         cam1_found_marker = ret
         if ret:
-            y = float(xm) / frame.shape[0]
-            z = float(ym) / frame.shape[1]
+            y = float(xm) / frame.shape[1]
+            z = float(ym) / frame.shape[0]
             cv2.circle(contour_mat, (xm, ym), 10, (255, 0, 0), -1)
-            cv2.imshow("Contour image", contour_mat)
+            # cv2.imshow("Contour image", contour_mat)
 
     cam2_found_marker = False
     x, y2 = None, None
     if cam2.is_opened():
-        frame = cam2.get_frame()
-        cv2.imshow("Raw camera feed2", frame)
+        frame = cam2.get_frame()[:, ::-1, :]
+        if not img_size_set:
+            loc_mat = np.zeros(frame.shape, np.uint8)
+            img_size_set = True
+        # cv2.imshow("Raw camera feed2", frame)
 
         ret, xm, ym = find_marker(frame)
         contour_mat = frame.copy()
         cam2_found_marker = ret
         if ret:
-            x = float(xm) / frame.shape[0]
-            y2 = float(ym) / frame.shape[1]
+            x = float(xm) / frame.shape[1]
+            y2 = float(ym) / frame.shape[0]
             cv2.circle(contour_mat, (xm, ym), 10, (255, 0, 0), -1)
-            cv2.imshow("Contour image2", contour_mat)
+            # cv2.imshow("Contour image2", contour_mat)
 
-    if cam1_found_marker and cam2_found_marker:
-        y = (y2 + y) / 2.0
-        loc_mat = np.zeros((600, 600, 3), np.uint8)
-        cv2.circle(loc_mat, (int(x * loc_mat.shape[1]), int(y * loc_mat.shape[0])), 10, (255, 0, 0),
-                   -1)
-        cv2.imshow("Estimated position", loc_mat)
-    elif cam2_found_marker:
+    if cam2_found_marker:
+        # y = (y2 + y) / 2.0
         y = y2
-        loc_mat = np.zeros((600, 600, 3), np.uint8)
-        cv2.circle(loc_mat, (int(x * loc_mat.shape[1]), int(y * loc_mat.shape[0])), 10, (255, 0, 0),
-                   -1)
-        cv2.imshow("Estimated position", loc_mat)
+
+        marker.set_dest(np.array([x, y, 0]))
+
+        xd, yd = (int(marker.loc[0] * loc_mat.shape[1]), int(marker.loc[1] * loc_mat.shape[0]))
+        # cv2.circle(loc_mat, (xd, yd), 4, (255, 0, 0), -1)
+        if not prev_set:
+            prevxd = xd
+            prevyd = yd
+            prev_set = True
+        roll = sensor.get_sensor("roll").value
+        pitch = sensor.get_sensor("pitch").value
+        thickness = int((-roll / 90) * 10)
+        if thickness < 1:
+            thickness = 1
+        cv2.line(loc_mat, (xd, yd), (prevxd, prevyd), (255, 0, 0), thickness=thickness)
+        prevxd = xd
+        prevyd = yd
+        #cv2.line(loc_mat, (xd, yd), (int(xd + ((roll / 90.0) * -400)), int(yd + ((pitch / 90.0) * 400))), (0, 255, 0),3)
+    else:
+        timer += delta
+
+    cv2.imshow("Estimated position", cv2.addWeighted(loc_mat, 0.6, frame, 0.4, 0))
+    # cv2.imshow("Estimated position", resize_img(loc_mat, height=640))
+
+    if timer > 1:
+        prev_set = False
+        marker.loc_set = False
+        timer = 0
+
+    marker.update()
 
     key = cv2.waitKey(1)
     if key & 0xFF == ord('q'):
         break
+    if key & 0xFF == ord('c'):
+        loc_mat = np.zeros(frame.shape, np.uint8)
 
 cam.shut_down()
 cam2.shut_down()
