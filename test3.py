@@ -15,6 +15,34 @@ cam2 = Cam("http://192.168.8.112:8080/")
 cam2.start()
 
 
+def rotate_bound(image, angle):
+    # grab the dimensions of the image and then determine the
+    # center
+    (h, w) = image.shape[:2]
+    (cX, cY) = (w // 2, h // 2)
+
+    # grab the rotation matrix (applying the negative of the
+    # angle to rotate clockwise), then grab the sine and cosine
+    # (i.e., the rotation components of the matrix)
+    M = cv2.getRotationMatrix2D((cX, cY), -angle, 1.0)
+    cos = np.abs(M[0, 0])
+    sin = np.abs(M[0, 1])
+
+    """# compute the new bounding dimensions of the image
+    nW = int((h * sin) + (w * cos))
+    nH = int((h * cos) + (w * sin))
+
+    # adjust the rotation matrix to take into account translation
+    M[0, 2] += (nW / 2) - cX
+    M[1, 2] += (nH / 2) - cY"""
+
+    nW = image.shape[1]
+    nH = image.shape[0]
+
+    # perform the actual rotation and return the image
+    return cv2.warpAffine(image, M, (nW, nH))
+
+
 def find_marker(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)[:, :, 0]
     cv2.GaussianBlur(gray, (7, 7), 0)
@@ -58,6 +86,7 @@ while True:
     y, z = None, None
     if cam.is_opened():
         frame = cam.get_frame()
+        frame = rotate_bound(frame, -sensor.get_sensor("rotation").value + 90)
         cv2.imshow("Raw camera feed", frame)
 
         ret, xm, ym = find_marker(frame)
@@ -87,7 +116,13 @@ while True:
     if cam1_found_marker and cam2_found_marker:
         y = (y2 + y) / 2.0
         loc_mat = np.zeros((600, 600, 3), np.uint8)
-        cv2.circle(loc_mat, (int(x * loc_mat.shape[1]), int(y * loc_mat.shape[0])), int(-z * 100) + 100, (255, 0, 0),
+        cv2.circle(loc_mat, (int(x * loc_mat.shape[1]), int(y * loc_mat.shape[0])), 10, (255, 0, 0),
+                   -1)
+        cv2.imshow("Estimated position", loc_mat)
+    elif cam2_found_marker:
+        y = y2
+        loc_mat = np.zeros((600, 600, 3), np.uint8)
+        cv2.circle(loc_mat, (int(x * loc_mat.shape[1]), int(y * loc_mat.shape[0])), 10, (255, 0, 0),
                    -1)
         cv2.imshow("Estimated position", loc_mat)
 

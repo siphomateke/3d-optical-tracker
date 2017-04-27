@@ -36,6 +36,9 @@ class Sensor:
     def update(self, data):
         self.value = np.array(self.get_last_reading(data))
 
+    def set(self, value):
+        self.value = value
+
 
 def get_jsonparsed_data(url):
     response = urlopen(url)
@@ -45,14 +48,19 @@ def get_jsonparsed_data(url):
 
 class CameraSensors:
     def __init__(self, url):
-        self.url = url
-        self.sensors = {}
+        self.url = url # type: str
+        self.sensors = {} # type: dict[str, Sensor]
 
     def update_sensor(self, name, data):
         """ Updates a sensors value. If it doesn't exist, create it"""
         if name not in self.sensors:
             self.sensors[name] = Sensor(name)
         self.sensors[name].update(data[name]["data"])
+
+    def set_sensor(self, name, value):
+        if name not in self.sensors:
+            self.sensors[name] = Sensor(name)
+        self.sensors[name].set(value)
 
     def get_sensor(self, name):
         """ Return the sensor with the give name """
@@ -66,3 +74,6 @@ class CameraSensors:
 
         if "accel" in sensors_data:
             self.update_sensor("accel", sensors_data)
+            ax, ay, az = self.get_sensor("accel").value
+            yaw = math.atan2(ax, ay) * (180 / math.pi)
+            self.set_sensor("rotation", yaw)
