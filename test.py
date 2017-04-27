@@ -34,7 +34,7 @@ while True:
         delta = ((now - then) / cv2.getTickFrequency())
         then = now
 
-        # vo.update(gray, delta)
+        vo.update(gray, delta)
 
         cur_t = vo.cur_t
         if vo.frame_stage > 1:
@@ -55,8 +55,6 @@ while True:
         if vo.optical_flow is not None:
             lines = cv2.add(frame, vo.optical_flow)
             cv2.imshow("Lines", lines)
-        transformed = rotate_img(frame, (sensor.get_sensor("rotation").value * -90) + 90)
-        cv2.imshow('Camera', transformed)
         cv2.imshow('Trajectory', traj)
     key = cv2.waitKey(1)
     if key & 0xFF == ord('q'):

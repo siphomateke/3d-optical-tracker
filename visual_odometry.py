@@ -26,13 +26,13 @@ def feature_tracking(prev_img, next_img, prev_pts):
 
 class PinholeCamera:
     def __init__(self, filename):
-        camera_settings = np.load(filename)
-        self.mtx = camera_settings["mtx"]
+        self.camera_settings = np.load(filename)
+        self.mtx = self.camera_settings["mtx"]
         self.fx = self.mtx[0][0]
         self.fy = self.mtx[1][1]
         self.cx = self.mtx[0][2]
         self.cy = self.mtx[1][2]
-        self.dist = camera_settings["dist"]
+        self.dist = self.camera_settings["dist"]
 
 
 class VisualOdometry:
