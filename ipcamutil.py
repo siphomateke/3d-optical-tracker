@@ -11,6 +11,13 @@ class Cam:
         self.thread = Thread(target=self.run)
         self.frame = None
         self.opened = False
+
+        if self.capture.open(self.url):
+            ret, img = self.capture.read()
+            self.shape = img.shape
+        else:
+            self.shape = None
+
         print "Camera initialised."
 
     def start(self):

@@ -13,8 +13,6 @@ objp = np.zeros((chessboard_size[1] * chessboard_size[0], 3), np.float32)
 objp[:, :2] = np.mgrid[0:chessboard_size[0], 0:chessboard_size[1]].T.reshape(-1, 2)
 objp *= chessboard_square_size
 
-print objp
-
 # Arrays to store object points and image points from all the images.
 objpoints = []  # 3d point in real world space
 imgpoints = []  # 2d points in image plane.

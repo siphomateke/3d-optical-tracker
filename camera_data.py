@@ -3,16 +3,23 @@ from ipcamutil import Cam
 from camera_sensors import CameraSensors
 from visual_odometry import PinholeCamera
 import numpy as np
+import math
 
 ipcam_url = "http://192.168.8.100:8080/"
 cam = Cam(ipcam_url)
 cam.start()
 sensor = CameraSensors(ipcam_url)
 
-camera_name = "LG-K8"
+camera_name = "LG-K8_scaled"
 cam_data = PinholeCamera("camera/" + camera_name + ".npz")
 # 2.6 cm
-print cv2.calibrationMatrixValues(cam_data.camera_settings["mtx"], (864, 480), 1.25, 1.25)
+fx = cam_data.mtx[0, 0]
+fy = cam_data.mtx[1, 1]
+imgWidth = 864
+imgHeight = 480
+fovx = 2.0 * math.atan(imgWidth / (2.0 * fx)) * (180.0 / math.pi)
+fovy = 2.0 * math.atan(imgHeight / (2.0 * fy)) * (180.0 / math.pi)
+print fovx, fovy
 
 chessboard_size = (9, 6)
 
