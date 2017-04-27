@@ -5,7 +5,7 @@ import cv2
 
 class Cam:
     def __init__(self, url):
-        self.url = url
+        self.url = url + "video"
         self.capture = cv2.VideoCapture()
         self.thread_cancelled = False
         self.thread = Thread(target=self.run)

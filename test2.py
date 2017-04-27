@@ -164,7 +164,7 @@ class Sensor:
 
 
 ipcamera_url = "http://192.168.8.100:8080/"
-cam = ipcamutil.Cam(ipcamera_url + "video")
+cam = ipcamutil.Cam(ipcamera_url)
 cam.start()
 sensor = Sensor(ipcamera_url)
 
