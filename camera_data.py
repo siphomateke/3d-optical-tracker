@@ -61,6 +61,8 @@ while True:
 
         img = frame.copy()
         if ret:
+            print corners.shape
+            print corners[0]
             corners_refined = cv2.cornerSubPix(gray, corners, (7, 7), (-1, -1), criteria)
 
             # Find the rotation and translation vectors.

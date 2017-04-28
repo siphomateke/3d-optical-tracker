@@ -1,9 +1,8 @@
 import cv2
 from ipcamutil import Cam
-from camera_sensors import CameraSensors
 from visual_odometry import PinholeCamera
 import numpy as np
-import math
+import marker_utils
 
 ipcam_url = "http://192.168.1.115:8080/"
 cam = Cam(ipcam_url)
@@ -15,7 +14,8 @@ cam_data = PinholeCamera("camera/" + camera_name + ".npz")
 chessboard_size = (9, 6)
 
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-objp = np.float32([-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0])
+objp = np.float32([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]])
+
 
 def draw(img, imgpts):
     for pt in imgpts:
@@ -25,35 +25,71 @@ def draw(img, imgpts):
     return img
 
 
+def add_points(pt_list, pts):
+    if pt_list.shape[0] > 0:
+        pt_list = np.vstack((pt_list, pts))
+    else:
+        pt_list = pts
+    return pt_list
+
+
+imgp = np.array([])
+pnp_solved = False
+rvecs, tvecs = None, None
 while True:
     if cam.is_opened():
         frame = cam.get_frame()
+        undistorted = cv2.undistort(frame, cam_data.mtx, cam_data.dist)
         cv2.imshow("Cam", frame)
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        output = gray.copy()
-        ret, corners = cv2.findChessboardCorners(gray, chessboard_size, None,
-                                                 cv2.CALIB_CB_FAST_CHECK | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_ASYMMETRIC_GRID | cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_FILTER_QUADS | cv2.CALIB_CB_CLUSTERING)
+        img = undistorted.copy()
 
-        img = frame.copy()
+        ret, x, y = marker_utils.find_marker(frame)
         if ret:
-            corners_refined = cv2.cornerSubPix(gray, corners, (7, 7), (-1, -1), criteria)
+            pts = np.array([[x, y]])
+            cv2.circle(img, (int(x), int(y)), 20, (0, 0, 255), 5)
 
+        if len(imgp) >= len(objp):
             # Find the rotation and translation vectors.
-            ret, rvecs, tvecs = cv2.solvePnP(objp, corners_refined, cam_data.mtx, cam_data.dist)
+            if not pnp_solved:
+                _, rvecs, tvecs = cv2.solvePnP(objp, imgp, cam_data.mtx, cam_data.dist)
+                pnp_solved = True
 
-            # project 3D points to image plane
-            imgpts, jac = cv2.projectPoints(axis, rvecs, tvecs, cam_data.mtx, cam_data.dist)
+            # K ^ (-1) * (x, y, 1) ^ T
+            ret, x, y = marker_utils.find_marker(undistorted)
+            if ret:
+                R, jac = cv2.Rodrigues(rvecs)
 
-            img = draw(img, imgpts)
-            cv2.drawChessboardCorners(img, chessboard_size, corners, ret)
+                zp = 3  # focal length of camera
+                xp = (x - cam_data.cx) * zp / cam_data.fx
+                yp = (y - cam_data.cy) * zp / cam_data.fy
+
+                pos = np.array([xp, yp, zp]).reshape(3, 1)
+                T = tvecs.reshape(3, 1)
+
+                R_inv = np.linalg.inv(R)
+                projection = np.dot(R_inv, (pos - T))
+                xr = projection[0]
+                yr = projection[1]
+                zr = projection[2]
+
+                new_points = np.float32([[xr, yr, zr]])
+                screen_points, jac = cv2.projectPoints(new_points, rvecs, tvecs, cam_data.mtx, cam_data.dist)
+                backprojection_error = np.linalg.norm(np.array([screen_points.ravel()[0], screen_points.ravel()[1]]) - np.array([x, y]))
+                print "Backprojection Error: {}".format(backprojection_error)
+                center = (int(screen_points.ravel()[0]), int(screen_points.ravel()[1]))
+                cv2.circle(img, center, 20, (0, 255, 0), 5)
         cv2.imshow("Visualization", img)
 
     key = cv2.waitKey(1)
     if key & 0xFF == ord('q'):
         break
-    if key & 0xFF == ord('s'):
-
+    if key & 0xFF == ord('s') and ret:
+        if len(imgp) < len(objp):
+            print len(imgp), len(objp)
+            imgp = add_points(imgp, pts)
+            print imgp
+            print("Saved coordinates as {}".format(objp[len(imgp) - 1]))
 
 cam.shut_down()
 cv2.destroyAllWindows()
