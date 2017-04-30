@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 
-def resize_img(img, width=-1, height=-1):
+def resize_img(img, width=-1, height=-1, interpolation=None):
     if height == -1 and width == -1:
         raise TypeError("Invalid arguments. Width or height must be provided.")
     h = img.shape[0]
@@ -10,11 +10,17 @@ def resize_img(img, width=-1, height=-1):
     if height == -1:
         aspect_ratio = float(w) / h
         new_height = int(width / aspect_ratio)
-        return cv2.resize(img, (width, new_height))
+        if interpolation is not None:
+            return cv2.resize(img, (width, new_height), interpolation=interpolation)
+        else:
+            return cv2.resize(img, (width, new_height))
     elif width == -1:
         aspect_ratio = h / float(w)
         new_width = int(height / aspect_ratio)
-        return cv2.resize(img, (new_width, height))
+        if interpolation is not None:
+            return cv2.resize(img, (new_width, height), interpolation=interpolation)
+        else:
+            return cv2.resize(img, (new_width, height))
 
 
 def rotate_img(image, angle, bounds=False):

@@ -6,7 +6,7 @@ import numpy as np
 import math
 
 #ipcam_url = "http://192.168.8.100:8080/"
-ipcam_url = "http://192.168.1.115:8080/"
+ipcam_url = "http://192.168.8.103:8080/"
 cam = Cam(ipcam_url)
 cam.start()
 sensor = CameraSensors(ipcam_url)
@@ -61,8 +61,6 @@ while True:
 
         img = frame.copy()
         if ret:
-            print corners.shape
-            print corners[0]
             corners_refined = cv2.cornerSubPix(gray, corners, (7, 7), (-1, -1), criteria)
 
             # Find the rotation and translation vectors.

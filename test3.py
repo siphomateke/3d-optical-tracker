@@ -4,7 +4,7 @@ from ipcamutil import Cam
 import numpy as np
 import marker_utils
 
-ipcam_url = "http://192.168.1.115:8080/"
+ipcam_url = "http://192.168.8.103:8080/"
 
 cam = Cam(ipcam_url)
 cam.start()
