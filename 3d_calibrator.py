@@ -52,8 +52,8 @@ def add_points(pt_list, pts):
 
 
 class Marker:
-    def __init__(self, ellipse):
-        self.ellipse = ellipse
+    def __init__(self, center):
+        self.center = center
 
 
 def find_fiducial_marker(frame):
@@ -70,6 +70,7 @@ def find_fiducial_marker(frame):
     _, contours, hierarchy = cv2.findContours(adaptive_thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
     detected_ellipses = []
+    areas = []
     for i in xrange(len(contours)):
         contour = contours[i]
         approx = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
@@ -105,20 +106,48 @@ def find_fiducial_marker(frame):
 
                 if shape_diff < 0.1:
                     detected_ellipses.append(ellipse)
+                    areas.append(area)
 
-    detected_markers = []  # type: list[Marker]
-    for ellipse in detected_ellipses:
-        detected_markers.append(Marker(ellipse))
-        cv2.partition
+    centers = {}
+    for i in xrange(len(detected_ellipses)):
+        centers[i] = np.array(detected_ellipses[i][0])
+
+    clusters = {}
+    MAX_DIST = 20
+    for i in xrange(len(detected_ellipses)):
+        center = centers[i]
+        found_cluster = False
+        for template_idx, cluster in clusters.iteritems():
+            dist = np.linalg.norm(center - centers[template_idx])
+            if dist < MAX_DIST:
+                if areas[i] > areas[template_idx]:
+                    cluster.insert(0, i)
+                    clusters[i] = cluster
+                else:
+                    cluster.append(i)
+                found_cluster = True
+                break
+        if not found_cluster:
+            clusters[i] = []
+            clusters[i].append(i)
 
     contour_mat = frame.copy()
+    detected_markers = []  # type: list[Marker]
+    for template_idx, cluster in clusters.iteritems():
+        if len(cluster) > 1:
+            ellipse = detected_ellipses[cluster[0]]
+            center = np.float64([0, 0])
+            for c_idx in cluster:
+                center += centers[c_idx]
+            center /= len(cluster)
+            detected_markers.append(Marker(center))
+            #cv2.ellipse(contour_mat, ellipse, (0, 0, 150), -1)
+
     for marker in detected_markers:
-        ellipse_center = marker.ellipse[0]
-        cv2.circle(contour_mat, (int(ellipse_center[0]), int(ellipse_center[1])), 2, (0, 150, 0), -1)
-        cv2.ellipse(contour_mat, marker.ellipse, (0, 0, 150), 1)
+        cv2.circle(contour_mat, (int(marker.center[0]), int(marker.center[1])), 5, (0, 150, 0), -1)
     cv2.imshow('Objects Detected', contour_mat)
-    # plt.imshow(cv2.cvtColor(contour_mat, cv2.COLOR_BGR2RGB))
-    # plt.show()
+    #plt.imshow(cv2.cvtColor(contour_mat, cv2.COLOR_BGR2RGB))
+    #plt.show()
 
     """sobelx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
     sobely = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
@@ -134,9 +163,11 @@ print cam_data.dist.shape
 imgp = np.float32([])
 pnp_solved = False
 rvecs, tvecs = None, None
+#main_img = cv2.imread("img\\photoaf.jpg")
 while True:
     if cam.is_opened():
         frame = cam.get_frame()
+        #frame = main_img
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         undistorted = cv2.undistort(frame, cam_data.mtx, cam_data.dist)
         cv2.imshow("Cam", frame)
