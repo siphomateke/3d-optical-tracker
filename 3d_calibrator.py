@@ -55,53 +55,88 @@ class Marker:
         self.center = center
 
 
+class MarkerFinder:
+    def __init__(self):
+        self.contours = None
+
+    def run(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        processed = cv2.equalizeHist(gray)
+        processed = cv2.GaussianBlur(processed, (7, 7), 1.4, 1.4)
+        cv2.imshow("Processed", processed)
+
+        canny = cv2.Canny(processed, 50, 150)
+        cv2.imshow("Canny", canny)
+        ret, self.contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_TC89_L1)
+
+        raw_contour_mat = frame.copy()
+        cv2.drawContours(raw_contour_mat, self.contours, -1, (128, 128, 255))
+        cv2.imshow("Canny contours", raw_contour_mat)
+
+        contour_mat = frame.copy()
+
+        detected_ellipses = []
+        areas = []
+        for i in xrange(len(self.contours)):
+            contour = self.contours[i]
+            h = hierarchy[0][i]
+            approx = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
+            area = cv2.contourArea(contour)
+
+            if (len(approx) > 4) and (area > 10) and h[2] > -1:
+                child_h = hierarchy[0][h[2]]
+                if child_h[2] > -1:
+                    ellipse = cv2.fitEllipse(contour)
+                    ellipse_center = np.array([ellipse[0][0], ellipse[0][1]])
+
+                    circle_center, radius = cv2.minEnclosingCircle(contour)
+                    circle_center = np.array([circle_center[0], circle_center[1]])
+
+                    center_dist = np.linalg.norm(ellipse_center - circle_center)
+                    # Major and minor axes respectively
+                    Ma, ma = ellipse[1]
+                    if center_dist < (Ma + ma) / 4.0 and Ma <= radius * 2.1 and ma <= radius * 2.1:
+                        # Determine if contour is ellipse using difference between filled fitted ellipse and actual contour
+                        x, y, w, h = cv2.boundingRect(contour)
+
+                        # Draw estimated ellipse mask
+                        ellipse_mask = np.zeros((h, w, 1), np.uint8)
+                        ellipse_translated = ((ellipse[0][0] - x, ellipse[0][1] - y), ellipse[1], ellipse[2])
+                        cv2.ellipse(ellipse_mask, ellipse_translated, (255, 255, 255), -1)
+
+                        # Draw actual contour mask
+                        contour_mask = np.zeros((h, w, 1), np.uint8)
+                        contour_translated = np.array(contour) - np.array([x, y])
+                        cv2.drawContours(contour_mask, [contour_translated], 0, (255, 255, 255), -1)
+
+                        # Find difference between contour and ellipse mask
+                        absdiff = cv2.absdiff(contour_mask, ellipse_mask)
+                        # Count and normalize difference
+                        shape_diff = cv2.countNonZero(absdiff) / float(area)
+
+                        if shape_diff < 0.1:
+                            detected_ellipses.append(ellipse)
+                            areas.append(area)
+                            cv2.ellipse(contour_mat, ellipse, (0, 255, 150), 1)
+        cv2.imshow("Other detected", contour_mat)
+
+
 def find_fiducial_marker(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    """canny = cv2.Canny(frame, 50, 255)
-    cv2.imshow("Canny", canny)
-    lines = cv2.HoughLinesP(canny, 1, math.pi / 180.0, 20, None, 10, 1)
-    line_mat = frame.copy()
-    if lines is not None:
-        for line in lines:
-            cv2.line(line_mat, tuple(line[0, :2]), tuple(line[0, 2:]), (0, 0, 255), 2)
-    cv2.imshow("Lines", line_mat)"""
 
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    yellow_thresh = cv2.inRange(hsv, (20, 100, 100), (30, 255, 255))
-    yellow_mask = cv2.dilate(yellow_thresh, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)))
-    yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
-    cv2.imshow("Yellow", yellow_mask)
-
-    yellow_regions = cv2.bitwise_and(gray, gray, mask=yellow_mask)
-    cv2.imshow("Yellow regions", yellow_regions)
-
-    harris_corners = cv2.cornerHarris(yellow_regions, 2, 3, 0.04)
-    ret, harris_thresh = cv2.threshold(harris_corners, 0.02 * harris_corners.max(), 255, 0)
-    harris_thresh = np.uint8(harris_thresh)
-
-    # find centroids
-    ret, labels, stats, centroids = cv2.connectedComponentsWithStats(harris_thresh)
-
-    # define the criteria to stop and refine the corners
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.001)
-    corners = cv2.cornerSubPix(gray, np.float32(centroids), (5, 5), (-1, -1), criteria)
-
-    # Now draw them
-    harris_vis = np.zeros(frame.shape, np.uint8)
-    harris_vis[np.int0(corners[:, 1]), np.int0(corners[:, 0])] = [0, 255, 0]
-    harris_vis = cv2.dilate(harris_vis, None)
-    harris_vis = cv2.add(harris_vis, frame)
-
-    cv2.imshow('Harris corners', harris_vis)
+    mFinder = MarkerFinder()
+    mFinder.run(frame)
 
     img_size = (frame.shape[0] + frame.shape[1]) / 2.0
-    block_size = int(img_size / 180.0)
+    block_size = int(img_size / 50.0)
     if block_size % 2 == 0:
         block_size += 1
-    adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block_size, 20)
+    adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block_size,
+                                            20)
     cv2.imshow("Thresh", adaptive_thresh)
 
-    _, contours, hierarchy = cv2.findContours(adaptive_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    _, contours, hierarchy = cv2.findContours(adaptive_thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
     contour_mat = frame.copy()
 
@@ -109,20 +144,15 @@ def find_fiducial_marker(frame):
     areas = []
     for i in xrange(len(contours)):
         contour = contours[i]
+        h = hierarchy[0][i]
         approx = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
         area = cv2.contourArea(contour)
-        if (len(approx) > 4) and (area > 10):
+        if (len(approx) > 4) and (area > 10) and h[2] > -1:
             ellipse = cv2.fitEllipse(contour)
             ellipse_center = np.array([ellipse[0][0], ellipse[0][1]])
 
             circle_center, radius = cv2.minEnclosingCircle(contour)
             circle_center = np.array([circle_center[0], circle_center[1]])
-
-            cv2.drawContours(contour_mat, [approx], -1, (255, 0, 0), 1)
-            M = cv2.moments(contour)
-            cX = int(M["m10"] / M["m00"])
-            cY = int(M["m01"] / M["m00"])
-            cv2.putText(contour_mat, str(len(approx)), (cX, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.2, (255,255,255), 1)
 
             center_dist = np.linalg.norm(ellipse_center - circle_center)
             # Major and minor axes respectively
@@ -149,6 +179,7 @@ def find_fiducial_marker(frame):
                 if shape_diff < 0.1:
                     detected_ellipses.append(ellipse)
                     areas.append(area)
+                    cv2.ellipse(contour_mat, ellipse, (0, 255, 150), 1)
 
     centers = {}
     for i in xrange(len(detected_ellipses)):
@@ -182,7 +213,7 @@ def find_fiducial_marker(frame):
                 center += centers[c_idx]
             center /= len(cluster)
             detected_markers.append(Marker(center))
-            # cv2.ellipse(contour_mat, ellipse, (0, 0, 150), -1)
+            cv2.ellipse(contour_mat, ellipse, (0, 0, 150), -1)
 
     for marker in detected_markers:
         cv2.circle(contour_mat, (int(marker.center[0]), int(marker.center[1])), 5, (0, 150, 0), -1)
