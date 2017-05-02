@@ -16,7 +16,7 @@ objp *= chessboard_square_size
 objpoints = []  # 3d point in real world space
 imgpoints = []  # 2d points in image plane.
 
-camera_name = "LG-K8_scaled"
+camera_name = "LG-K8_scaled2"
 
 
 def run(frame, save_img, calibrate):
@@ -39,7 +39,7 @@ def run(frame, save_img, calibrate):
 
 
 def main():
-    cam = ipcamutil.Cam("http://192.168.8.103:8080/")
+    cam = ipcamutil.Cam("http://192.168.1.115:8080/")
     cam.start()
 
     save_img = False

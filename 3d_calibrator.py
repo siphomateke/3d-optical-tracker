@@ -3,7 +3,6 @@ from ipcamutil import Cam
 from visual_odometry import PinholeCamera
 import numpy as np
 import marker_utils
-import math
 from imutils import resize_img
 import math
 from matplotlib import pyplot as plt
@@ -13,7 +12,7 @@ ipcam_url = "http://192.168.1.115:8080/"
 cam = Cam(ipcam_url)
 cam.start()
 
-camera_name = "LG-K8_scaled"
+camera_name = "LG-K8_scaled2"
 cam_data = PinholeCamera("camera/" + camera_name + ".npz")
 
 objp = np.float32([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]])
@@ -58,16 +57,53 @@ class Marker:
 
 def find_fiducial_marker(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    """canny = cv2.Canny(frame, 50, 255)
+    cv2.imshow("Canny", canny)
+    lines = cv2.HoughLinesP(canny, 1, math.pi / 180.0, 20, None, 10, 1)
+    line_mat = frame.copy()
+    if lines is not None:
+        for line in lines:
+            cv2.line(line_mat, tuple(line[0, :2]), tuple(line[0, 2:]), (0, 0, 255), 2)
+    cv2.imshow("Lines", line_mat)"""
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    yellow_thresh = cv2.inRange(hsv, (20, 100, 100), (30, 255, 255))
+    yellow_mask = cv2.dilate(yellow_thresh, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)))
+    yellow_mask = cv2.morphologyEx(yellow_mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    cv2.imshow("Yellow", yellow_mask)
+
+    yellow_regions = cv2.bitwise_and(gray, gray, mask=yellow_mask)
+    cv2.imshow("Yellow regions", yellow_regions)
+
+    harris_corners = cv2.cornerHarris(yellow_regions, 2, 3, 0.04)
+    ret, harris_thresh = cv2.threshold(harris_corners, 0.02 * harris_corners.max(), 255, 0)
+    harris_thresh = np.uint8(harris_thresh)
+
+    # find centroids
+    ret, labels, stats, centroids = cv2.connectedComponentsWithStats(harris_thresh)
+
+    # define the criteria to stop and refine the corners
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.001)
+    corners = cv2.cornerSubPix(gray, np.float32(centroids), (5, 5), (-1, -1), criteria)
+
+    # Now draw them
+    harris_vis = np.zeros(frame.shape, np.uint8)
+    harris_vis[np.int0(corners[:, 1]), np.int0(corners[:, 0])] = [0, 255, 0]
+    harris_vis = cv2.dilate(harris_vis, None)
+    harris_vis = cv2.add(harris_vis, frame)
+
+    cv2.imshow('Harris corners', harris_vis)
 
     img_size = (frame.shape[0] + frame.shape[1]) / 2.0
     block_size = int(img_size / 180.0)
     if block_size % 2 == 0:
         block_size += 1
-    adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block_size,
-                                            20)
+    adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block_size, 20)
     cv2.imshow("Thresh", adaptive_thresh)
 
-    _, contours, hierarchy = cv2.findContours(adaptive_thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    _, contours, hierarchy = cv2.findContours(adaptive_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    contour_mat = frame.copy()
 
     detected_ellipses = []
     areas = []
@@ -81,6 +117,12 @@ def find_fiducial_marker(frame):
 
             circle_center, radius = cv2.minEnclosingCircle(contour)
             circle_center = np.array([circle_center[0], circle_center[1]])
+
+            cv2.drawContours(contour_mat, [approx], -1, (255, 0, 0), 1)
+            M = cv2.moments(contour)
+            cX = int(M["m10"] / M["m00"])
+            cY = int(M["m01"] / M["m00"])
+            cv2.putText(contour_mat, str(len(approx)), (cX, cY), cv2.FONT_HERSHEY_SIMPLEX, 0.2, (255,255,255), 1)
 
             center_dist = np.linalg.norm(ellipse_center - circle_center)
             # Major and minor axes respectively
@@ -131,7 +173,6 @@ def find_fiducial_marker(frame):
             clusters[i] = []
             clusters[i].append(i)
 
-    contour_mat = frame.copy()
     detected_markers = []  # type: list[Marker]
     for template_idx, cluster in clusters.iteritems():
         if len(cluster) > 1:
@@ -141,13 +182,13 @@ def find_fiducial_marker(frame):
                 center += centers[c_idx]
             center /= len(cluster)
             detected_markers.append(Marker(center))
-            #cv2.ellipse(contour_mat, ellipse, (0, 0, 150), -1)
+            # cv2.ellipse(contour_mat, ellipse, (0, 0, 150), -1)
 
     for marker in detected_markers:
         cv2.circle(contour_mat, (int(marker.center[0]), int(marker.center[1])), 5, (0, 150, 0), -1)
     cv2.imshow('Objects Detected', contour_mat)
-    #plt.imshow(cv2.cvtColor(contour_mat, cv2.COLOR_BGR2RGB))
-    #plt.show()
+    # plt.imshow(cv2.cvtColor(contour_mat, cv2.COLOR_BGR2RGB))
+    # plt.show()
 
     """sobelx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
     sobely = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
@@ -163,21 +204,20 @@ print cam_data.dist.shape
 imgp = np.float32([])
 pnp_solved = False
 rvecs, tvecs = None, None
-#main_img = cv2.imread("img\\photoaf.jpg")
 while True:
     if cam.is_opened():
         frame = cam.get_frame()
-        #frame = main_img
+        cv2.imshow("Cam", frame)
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         undistorted = cv2.undistort(frame, cam_data.mtx, cam_data.dist)
-        cv2.imshow("Cam", frame)
 
         img = frame.copy()
 
         ret, x, y = marker_utils.find_marker(frame)
         if ret:
             pts = np.float32([[x, y]])
-            cv2.circle(img, (int(x), int(y)), 20, (0, 0, 255), 5)
+            cv2.circle(img, (int(x), int(y)), 20, (0, 0, 255), 2)
 
         if len(imgp) >= len(objp):
             # Find the rotation and translation vectors.
