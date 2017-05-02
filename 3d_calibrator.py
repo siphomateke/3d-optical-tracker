@@ -51,15 +51,28 @@ def add_points(pt_list, pts):
 
 
 class Marker:
-    def __init__(self, center):
-        self.center = center
+    def __init__(self, ellipse):
+        self.ellipse = ellipse
+        self.center = np.array([ellipse[0][0], ellipse[0][1]])
 
 
 class MarkerFinder:
     def __init__(self):
         self.contours = None
+        self.hierarchy = None
+
+    def get_contour_children(self, idx):
+        child_idx = self.hierarchy[0][idx][2]
+        has_child = child_idx > -1
+        children = np.int0([])
+        while has_child:
+            children = np.append(children, child_idx)
+            child_idx = self.hierarchy[0][child_idx][2]
+            has_child = child_idx > -1
+        return children
 
     def run(self, frame):
+        img_size = (frame.shape[0] + frame.shape[1]) / 2.0
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         processed = cv2.equalizeHist(gray)
@@ -68,165 +81,89 @@ class MarkerFinder:
 
         canny = cv2.Canny(processed, 50, 150)
         cv2.imshow("Canny", canny)
-        ret, self.contours, hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_TC89_L1)
-
-        raw_contour_mat = frame.copy()
-        cv2.drawContours(raw_contour_mat, self.contours, -1, (128, 128, 255))
-        cv2.imshow("Canny contours", raw_contour_mat)
+        _, self.contours, self.hierarchy = cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_TC89_L1)
 
         contour_mat = frame.copy()
 
+        areas = np.float32([])
+        for i in xrange(len(self.contours)):
+            area = cv2.contourArea(self.contours[i])
+            areas = np.append(areas, area)
+
         detected_ellipses = []
-        areas = []
         for i in xrange(len(self.contours)):
             contour = self.contours[i]
-            h = hierarchy[0][i]
             approx = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
-            area = cv2.contourArea(contour)
+            area = areas[i]
+            children = self.get_contour_children(i)
+            num_children = len(children)
+            children_areas = areas[children]
 
-            if (len(approx) > 4) and (area > 10) and h[2] > -1:
-                child_h = hierarchy[0][h[2]]
-                if child_h[2] > -1:
-                    ellipse = cv2.fitEllipse(contour)
-                    ellipse_center = np.array([ellipse[0][0], ellipse[0][1]])
+            if (len(approx) > 4) and (math.pow(img_size / 2.0, 2) > area > 10) and num_children >= 3:
+                # If area is bigger than all children
+                if np.all(area > children_areas):
+                    child_area_ratio = area / areas[children[1]]
+                    if 2.1 > child_area_ratio > 1.7:
+                        ellipse = cv2.fitEllipse(contour)
+                        # Major and minor axes respectively
+                        Ma, ma = ellipse[1]
+                        aspect_ratio = float(Ma) / ma
+                        if aspect_ratio < 3:
+                            ellipse_center = np.array([ellipse[0][0], ellipse[0][1]])
 
-                    circle_center, radius = cv2.minEnclosingCircle(contour)
-                    circle_center = np.array([circle_center[0], circle_center[1]])
+                            circle_center, radius = cv2.minEnclosingCircle(contour)
+                            circle_center = np.array([circle_center[0], circle_center[1]])
 
-                    center_dist = np.linalg.norm(ellipse_center - circle_center)
-                    # Major and minor axes respectively
-                    Ma, ma = ellipse[1]
-                    if center_dist < (Ma + ma) / 4.0 and Ma <= radius * 2.1 and ma <= radius * 2.1:
-                        # Determine if contour is ellipse using difference between filled fitted ellipse and actual contour
-                        x, y, w, h = cv2.boundingRect(contour)
+                            # Distance between approx circle center and approx ellipse center
+                            center_dist = np.linalg.norm(ellipse_center - circle_center)
+                            # Make sure approx ellipse is not bigger than approx circle
+                            if center_dist < (Ma + ma) / 4.0 and Ma <= radius * 2.1 and ma <= radius * 2.1:
+                                # Determine if contour is ellipse using difference between ellipse and actual contour
+                                x, y, w, h = cv2.boundingRect(contour)
 
-                        # Draw estimated ellipse mask
-                        ellipse_mask = np.zeros((h, w, 1), np.uint8)
-                        ellipse_translated = ((ellipse[0][0] - x, ellipse[0][1] - y), ellipse[1], ellipse[2])
-                        cv2.ellipse(ellipse_mask, ellipse_translated, (255, 255, 255), -1)
+                                # Draw estimated ellipse mask
+                                ellipse_mask = np.zeros((h, w, 1), np.uint8)
+                                ellipse_translated = ((ellipse[0][0] - x, ellipse[0][1] - y), ellipse[1], ellipse[2])
+                                cv2.ellipse(ellipse_mask, ellipse_translated, (255, 255, 255), -1)
 
-                        # Draw actual contour mask
-                        contour_mask = np.zeros((h, w, 1), np.uint8)
-                        contour_translated = np.array(contour) - np.array([x, y])
-                        cv2.drawContours(contour_mask, [contour_translated], 0, (255, 255, 255), -1)
+                                # Draw actual contour mask
+                                contour_mask = np.zeros((h, w, 1), np.uint8)
+                                contour_translated = np.array(contour) - np.array([x, y])
+                                cv2.drawContours(contour_mask, [contour_translated], 0, (255, 255, 255), -1)
 
-                        # Find difference between contour and ellipse mask
-                        absdiff = cv2.absdiff(contour_mask, ellipse_mask)
-                        # Count and normalize difference
-                        shape_diff = cv2.countNonZero(absdiff) / float(area)
+                                # Find difference between contour and ellipse mask
+                                absdiff = cv2.absdiff(contour_mask, ellipse_mask)
+                                # Count and normalize difference
+                                shape_diff = cv2.countNonZero(absdiff) / float(area)
 
-                        if shape_diff < 0.1:
-                            detected_ellipses.append(ellipse)
-                            areas.append(area)
-                            cv2.ellipse(contour_mat, ellipse, (0, 255, 150), 1)
-        cv2.imshow("Other detected", contour_mat)
+                                if shape_diff < 0.1:
+                                    detected_ellipses.append(ellipse)
+                                    cv2.ellipse(contour_mat, ellipse, (0, 255, 150), 1)
+
+        detected_markers = np.array([])  # type: list[Marker]
+        for ellipse in detected_ellipses:
+            detected_markers = np.append(detected_markers, Marker(ellipse))
+
+        # Sort markers
+        if len(detected_markers) > 0:
+            centers = np.array([marker.center for marker in detected_markers])
+            detected_markers = detected_markers[np.argsort(centers[:, 0])[::-1]]  # x sort
+            detected_markers = detected_markers[np.argsort(centers[:, 1])]  # y sort
+            prev_center = None
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            for i in xrange(len(detected_markers)):
+                marker = detected_markers[i]
+                cv2.circle(contour_mat, (int(marker.center[0]), int(marker.center[1])), 2, (0, 150, 0), -1)
+                cv2.putText(contour_mat, str(i), tuple(np.int0(marker.center)), font, 1, (255, 0, 255), 2)
+                if prev_center is not None:
+                    cv2.line(contour_mat, tuple(np.int0(marker.center)), tuple(np.int0(prev_center)), (0, 0, 255), 2)
+                prev_center = marker.center
+        cv2.imshow('Objects Detected', contour_mat)
 
 
 def find_fiducial_marker(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
     mFinder = MarkerFinder()
     mFinder.run(frame)
-
-    img_size = (frame.shape[0] + frame.shape[1]) / 2.0
-    block_size = int(img_size / 50.0)
-    if block_size % 2 == 0:
-        block_size += 1
-    adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block_size,
-                                            20)
-    cv2.imshow("Thresh", adaptive_thresh)
-
-    _, contours, hierarchy = cv2.findContours(adaptive_thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    contour_mat = frame.copy()
-
-    detected_ellipses = []
-    areas = []
-    for i in xrange(len(contours)):
-        contour = contours[i]
-        h = hierarchy[0][i]
-        approx = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
-        area = cv2.contourArea(contour)
-        if (len(approx) > 4) and (area > 10) and h[2] > -1:
-            ellipse = cv2.fitEllipse(contour)
-            ellipse_center = np.array([ellipse[0][0], ellipse[0][1]])
-
-            circle_center, radius = cv2.minEnclosingCircle(contour)
-            circle_center = np.array([circle_center[0], circle_center[1]])
-
-            center_dist = np.linalg.norm(ellipse_center - circle_center)
-            # Major and minor axes respectively
-            Ma, ma = ellipse[1]
-            if center_dist < (Ma + ma) / 4.0 and Ma <= radius * 2.1 and ma <= radius * 2.1:
-                # Determine if contour is ellipse using difference between filled fitted ellipse and actual contour
-                x, y, w, h = cv2.boundingRect(contour)
-
-                # Draw estimated ellipse mask
-                ellipse_mask = np.zeros((h, w, 1), np.uint8)
-                ellipse_translated = ((ellipse[0][0] - x, ellipse[0][1] - y), ellipse[1], ellipse[2])
-                cv2.ellipse(ellipse_mask, ellipse_translated, (255, 255, 255), -1)
-
-                # Draw actual contour mask
-                contour_mask = np.zeros((h, w, 1), np.uint8)
-                contour_translated = np.array(contour) - np.array([x, y])
-                cv2.drawContours(contour_mask, [contour_translated], 0, (255, 255, 255), -1)
-
-                # Find difference between contour and ellipse mask
-                absdiff = cv2.absdiff(contour_mask, ellipse_mask)
-                # Count and normalize difference
-                shape_diff = cv2.countNonZero(absdiff) / float(area)
-
-                if shape_diff < 0.1:
-                    detected_ellipses.append(ellipse)
-                    areas.append(area)
-                    cv2.ellipse(contour_mat, ellipse, (0, 255, 150), 1)
-
-    centers = {}
-    for i in xrange(len(detected_ellipses)):
-        centers[i] = np.array(detected_ellipses[i][0])
-
-    clusters = {}
-    MAX_DIST = 20
-    for i in xrange(len(detected_ellipses)):
-        center = centers[i]
-        found_cluster = False
-        for template_idx, cluster in clusters.iteritems():
-            dist = np.linalg.norm(center - centers[template_idx])
-            if dist < MAX_DIST:
-                if areas[i] > areas[template_idx]:
-                    cluster.insert(0, i)
-                    clusters[i] = cluster
-                else:
-                    cluster.append(i)
-                found_cluster = True
-                break
-        if not found_cluster:
-            clusters[i] = []
-            clusters[i].append(i)
-
-    detected_markers = []  # type: list[Marker]
-    for template_idx, cluster in clusters.iteritems():
-        if len(cluster) > 1:
-            ellipse = detected_ellipses[cluster[0]]
-            center = np.float64([0, 0])
-            for c_idx in cluster:
-                center += centers[c_idx]
-            center /= len(cluster)
-            detected_markers.append(Marker(center))
-            cv2.ellipse(contour_mat, ellipse, (0, 0, 150), -1)
-
-    for marker in detected_markers:
-        cv2.circle(contour_mat, (int(marker.center[0]), int(marker.center[1])), 5, (0, 150, 0), -1)
-    cv2.imshow('Objects Detected', contour_mat)
-    # plt.imshow(cv2.cvtColor(contour_mat, cv2.COLOR_BGR2RGB))
-    # plt.show()
-
-    """sobelx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
-    sobely = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
-    abs_sobelx = cv2.convertScaleAbs(sobelx)
-    abs_sobely = cv2.convertScaleAbs(sobely)
-    grad = cv2.addWeighted(abs_sobelx, 0.5, abs_sobely, 0.5, 0)
-    cv2.imshow("Sobel", grad)"""
 
 
 print cam_data.mtx.shape
