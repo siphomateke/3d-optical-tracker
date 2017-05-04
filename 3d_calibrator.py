@@ -145,11 +145,12 @@ class CalibrationMarkerFinder:
             rotated_points = rotate_points(centers, angle)
 
             # Approximate bounding rect to find out if shape was rotated correctly
-            approx_rotated_rect = cv2.boundingRect(rotated_points)
-            # If grid width is greater than height and rect width is greater than height
+            rotated_points_bounds = cv2.boundingRect(rotated_points)
+            w, h = rotated_points_bounds[2], rotated_points_bounds[3]
             wrong_rotation = False
-            # TODO: Correct orientation calculation in sort_markers
-            if not (grid_size[1] > grid_size[0] and approx_rotated_rect[2] > approx_rotated_rect[3]):
+            # If the points shape does not match the required grid shape
+            if not ((grid_size[1] > grid_size[0] and w > h) or
+                    (grid_size[1] < grid_size[0] and w < h)):
                 # Rotated incorrectly, correct it
                 rotated_points = rotate_points(centers, angle - (math.pi / 2))
                 wrong_rotation = True
