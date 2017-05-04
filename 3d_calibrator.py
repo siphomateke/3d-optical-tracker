@@ -6,9 +6,10 @@ import marker_utils
 from imutils import resize_img
 import math
 from types import *
+import config.cmarker
 from matplotlib import pyplot as plt
 
-ipcam_url = "http://192.168.8.100:8080/"
+ipcam_url = "http://192.168.8.102:8080/"
 # ipcam_url = "http://192.168.1.115:8080/"
 cam = Cam(ipcam_url)
 cam_available = cam.start()
@@ -111,9 +112,14 @@ def rotate_points(pts, angle):
 
 
 class Marker:
-    def __init__(self, ellipse):
+    def __init__(self, ellipse, area, num_children):
         self.ellipse = ellipse
         self.center = np.array([ellipse[0][0], ellipse[0][1]])
+        self.area = area
+        self.num_children = num_children
+
+    def dist_to(self, point):
+        return np.linalg.norm(self.center - point)
 
 
 class MarkerFinder:
@@ -151,9 +157,12 @@ class MarkerFinder:
         :param gray: The image to be processed
         :return: The processed image
         """
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(int(self.img_size / 100), int(self.img_size / 100)))
+        clahe = cv2.createCLAHE(clipLimit=config.cmarker.CLAHE_CLIP_LIMIT, tileGridSize=(
+            int(self.img_size / config.cmarker.CLAHE_TILE_GRID_SIZE_RATIO),
+            int(self.img_size / config.cmarker.CLAHE_TILE_GRID_SIZE_RATIO)))
         processed = clahe.apply(gray)
-        processed = cv2.GaussianBlur(processed, (7, 7), 1.4, 1.4)
+        processed = cv2.GaussianBlur(processed, config.cmarker.BLUR_KSIZE, config.cmarker.BLUR_SIGMA,
+                                     config.cmarker.BLUR_SIGMA)
         return processed
 
     @staticmethod
@@ -163,7 +172,7 @@ class MarkerFinder:
         :param image: The image to find contours in
         :return: Tuple : im2, contours, hierarchy
         """
-        canny = cv2.Canny(image, 50, 150)
+        canny = cv2.Canny(image, config.cmarker.CANNY_LOWER, config.cmarker.CANNY_UPPER)
         return cv2.findContours(canny, cv2.RETR_TREE, cv2.CHAIN_APPROX_TC89_L1)
 
     @staticmethod
@@ -208,9 +217,10 @@ class MarkerFinder:
                 sort = sort[::-1]
 
             markers = markers[sort]
+            successful = True
         else:
-            markers = np.array([])
-        return markers
+            successful = False
+        return successful, markers
 
     def find(self, image):
         """
@@ -229,7 +239,8 @@ class MarkerFinder:
         _, self.contours, self.hierarchy = self.find_contours(processed)
         self.markers = np.array([])  # type: list[Marker]
 
-        if len(self.contours) > 0:
+        found = False
+        if len(self.contours) > 1:
             # region Area pre-calculation
             areas = np.float32([])
             for i in xrange(len(self.contours)):
@@ -246,16 +257,17 @@ class MarkerFinder:
                 num_children = len(children)
                 children_areas = areas[children]
 
+                # num of contours must be greater than 5 for fitEllipse to work
                 if len(contour) > 5 and (len(approx) > 4) and \
-                        (math.pow(self.img_size / 2.0, 2) > area > 10) and \
-                                num_children >= 3 and np.all(area > children_areas):
+                        (math.pow(self.img_size / 2.0, 2) > area > config.cmarker.CONTOUR_MIN_AREA) and \
+                        num_children >= 2 and np.all(area > children_areas):
                     # Check ratio to children
                     ratio_correct = False
                     for child in children:
                         if areas[child] <= 0:
                             continue
                         child_area_ratio = area / areas[child]
-                        if 2.2 > child_area_ratio > 1.6:
+                        if config.cmarker.CONTOUR_MAX_CHILD_AREA_RATIO > child_area_ratio > config.cmarker.CONTOUR_MIN_CHILD_AREA_RATIO:
                             ratio_correct = True
                             break
                     # If ratio to children matches model
@@ -264,7 +276,7 @@ class MarkerFinder:
                         # Major and minor ellipse axes respectively
                         major, minor = ellipse[1]
                         aspect_ratio = float(major) / minor
-                        if aspect_ratio < 3:
+                        if aspect_ratio < config.cmarker.CONTOUR_MAX_ASPECT_RATIO:
                             ellipse_center = np.array([ellipse[0][0], ellipse[0][1]])
 
                             circle_center, radius = cv2.minEnclosingCircle(contour)
@@ -273,7 +285,9 @@ class MarkerFinder:
                             # Distance between approx circle center and approx ellipse center
                             center_dist = np.linalg.norm(ellipse_center - circle_center)
                             # Make sure approx ellipse is not bigger than approx circle
-                            if center_dist < (major + minor) / 4.0 and major <= radius * 2.1 and minor <= radius * 2.1:
+                            if center_dist < (major + minor) / config.cmarker.CONTOUR_MAX_CENTER_DIST_RATIO and \
+                                    major <= radius * config.cmarker.CONTOUR_MAJOR2RADIUS_RATIO and \
+                                    minor <= radius * config.cmarker.CONTOUR_MINOR2RADIUS_RATIO:
                                 # Determine if contour is ellipse using difference between ellipse and actual contour
                                 x, y, w, h = cv2.boundingRect(contour)
 
@@ -292,29 +306,76 @@ class MarkerFinder:
                                 # Count and normalize difference
                                 shape_diff = cv2.countNonZero(abs_diff) / float(area)
 
-                                if shape_diff < 0.1:
-                                    self.markers = np.append(self.markers, Marker(ellipse))
+                                if shape_diff < config.cmarker.CONTOUR_ELLIPSE_CONTOUR_DIFF:
+                                    m = Marker(ellipse, area, num_children)
+
+                                    # region Check if there is a better marker nearby and delete worse ones
+                                    found_duplicate = False
+                                    markers_to_remove = []
+                                    for j in xrange(len(self.markers)):
+                                        m2 = self.markers[j]
+                                        if m.dist_to(m2.center) < config.cmarker.MAX_MARKER_DIST:
+                                            # If found a better one forget about me
+                                            if m2.area > m.area and m2.num_children > m.num_children:
+                                                found_duplicate = True
+                                            # If existing ones are worse delete them
+                                            else:
+                                                markers_to_remove.append(j)
+
+                                    for idx in markers_to_remove:
+                                        np.delete(self.markers, idx)
+                                    # endregion
+
+                                    # If this is the best marker in the vicinity use this one
+                                    if not found_duplicate:
+                                        self.markers = np.append(self.markers, m)
             # endregion
 
             # Sort markers from top-left to bottom-right
-            self.markers = self.sort_markers(self.markers)
+            found, self.markers = self.sort_markers(self.markers)
 
             # region Draw found markers, debug only
             contour_mat = frame.copy()
             prev_center = None
+            r = 10
+            colors = [
+                (0, 0, 255),
+                (0, 128, 255),
+                (0, 200, 200),
+                (0, 255, 0),
+                (200, 200, 0),
+                (255, 0, 0),
+                (255, 0, 255)
+            ]
             for i in xrange(len(self.markers)):
                 marker = self.markers[i]
-                if prev_center is not None:
-                    cv2.line(contour_mat, tuple(np.int0(marker.center)), tuple(np.int0(prev_center)), (0, 0, 255),
-                             2)
-                cv2.ellipse(contour_mat, marker.ellipse, (0, 50, 150), -1)
-                cv2.putText(contour_mat, str(i), tuple(np.int0(marker.center)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (255, 255, 255), 1)
-                prev_center = marker.center
+                center = tuple(np.int0(marker.center))
+                if prev_center is not None and found:
+                    cv2.line(contour_mat, center, prev_center, (0, 0, 0), 1)
+                if found:
+                    color = colors[int(i / grid_size[1]) % len(colors)]
+                    cv2.line(contour_mat, (center[0] - r, center[1] - r), (center[0] + r, center[1] + r), color, 1)
+                    cv2.line(contour_mat, (center[0] - r, center[1] + r), (center[0] + r, center[1] - r), color, 1)
+                    cv2.circle(contour_mat, center, r + 2, color, 1)
+                else:
+                    color = (0, 0, 255)
+                    cv2.line(contour_mat, (center[0] - r, center[1] - r), (center[0] + r, center[1] + r), color, 1)
+                    cv2.line(contour_mat, (center[0] - r, center[1] + r), (center[0] + r, center[1] - r), color, 1)
+                    cv2.circle(contour_mat, center, r + 2, color, 1)
+                # cv2.ellipse(contour_mat, marker.ellipse, color, -1)
+                """if found:
+                    cv2.putText(contour_mat, str(i), (center[0] - 5, center[1] - int(r*1.7)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)"""
+                prev_center = center
             cv2.imshow('Objects Detected', contour_mat)
             # endregion
 
-        return len(self.markers) > 0, self.markers
+            if not found:
+                self.markers = np.array([])
+
+        if self.markers.shape[0] == 0:
+            found = False
+
+        return found, self.markers
 
 
 rvec, tvec = None, None
@@ -346,7 +407,6 @@ if cam_available:
                 # x = 550
                 # y = 400
                 if x is not None and y is not None:
-                    # TODO: Fix 3d position calculation
                     K = cam_data.mtx
                     R, jac = cv2.Rodrigues(rvec)
 
@@ -357,44 +417,28 @@ if cam_available:
                     p = np.matrix(np.array([x, y, 1]).reshape(3, 1))
                     tvec_m = np.matrix(tvec)
 
-                    print K_inv
-                    print R_inv
-                    print tvec_m
-                    print p
-
                     tempMat = R_inv * K_inv * p
                     tempMat2 = R_inv * tvec_m
-                    print "tempMat: {}".format(tempMat)
-                    print "tempMat2: {}".format(tempMat2)
                     s = Z + tempMat2[2, 0]
                     s /= tempMat[2, 0]
-                    print s
-                    print (K_inv * (p - tvec))
-                    print s * (K_inv * (p - tvec))
                     P = R_inv * (s * K_inv * p - tvec)
-                    print "P: {}".format(P)
+                    print "P: {}".format(np.round(P, 2) / 1000)
 
                     xr = P[0]
                     yr = P[1]
 
                     new_points = np.float32([[xr, yr, Z]])
-                    screen_points, jac = cv2.projectPoints(new_points, rvec, tvec, cam_data.mtx, None)
+                    screen_points, jac = cv2.projectPoints(new_points, rvec, tvec, cam_data.mtx, distCoeffs=None)
                     backprojection_error = np.linalg.norm(
                         np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
-                    # print "Backprojection Error: {}".format(backprojection_error)
+                    print "Backprojection Error: {}".format(backprojection_error)
                     center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
                     cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
                     cv2.circle(img, center, 5, (255, 0, 0), -1)
 
-                grid_points, jac = cv2.projectPoints(objp, rvec, tvec, cam_data.mtx, cam_data.dist)
-                if np.all(abs(grid_points) < 1e6):
-                    draw_points(img, grid_points, (255, 255, 0), 5)
-
-                grid_points2, jac = cv2.projectPoints(grid, rvec, tvec, cam_data.mtx, cam_data.dist)
+                grid_points2, jac = cv2.projectPoints(grid, rvec, tvec, cam_data.mtx, distCoeffs=None)
                 if np.all(abs(grid_points2) < 1e6):
                     draw_grid(img, grid_points2, (0, 255, 0))
-            if np.all(abs(imgp) < 1e6):
-                draw_points(img, imgp, (255, 0, 255))
             cv2.imshow("Visualization", img)
 
         key = cv2.waitKey(1)
