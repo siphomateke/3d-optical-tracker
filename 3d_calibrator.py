@@ -1,62 +1,13 @@
-import cv2
-from ipcamutil import Cam
-from visual_odometry import PinholeCamera
-import numpy as np
-import marker_utils
-from imutils import resize_img
 import math
 from types import *
-import config.cmarker
+import cv2
+import numpy as np
 from matplotlib import pyplot as plt
 
-ipcam_url = "http://192.168.8.102:8080/"
-# ipcam_url = "http://192.168.1.115:8080/"
-cam = Cam(ipcam_url)
-cam_available = cam.start()
-
-camera_name = "LG-K8_scaled2"
-cam_data = PinholeCamera("camera/" + camera_name + ".npz")
-
-# height, width
-grid_size = (4, 3)
-grid_spacing = 162  # mm
-x_spacing = 212
-y_spacing = 144
-module_y_spacing = 154
-objp = np.zeros((grid_size[1] * grid_size[0], 3), np.float32)
-count = 0
-grid = np.float32([])
-for y in xrange(grid_size[0]):
-    for x in xrange(grid_size[1]):
-        coord = np.array([x * x_spacing, (y * y_spacing) + (int(y / 2) * (module_y_spacing - y_spacing))])
-        objp[count, :2] = coord
-        count += 1
-        if (x == 0 or x == grid_size[1] - 1) and (y == 0 or y == grid_size[0] - 1):
-            coord3D = np.float32([coord[0], coord[1], 0])
-            coord3D_up = np.float32([coord3D[0], coord3D[1], -x_spacing])
-            if len(grid) == 0:
-                grid = np.float32([coord3D, coord3D_up])
-            else:
-                grid = np.vstack((grid, coord3D))
-                grid = np.vstack((grid, coord3D_up))
-# objp *= grid_spacing
-# objp /= x_spacing
-# grid /= x_spacing
-
-"""grid = np.float32([
-    [0, 0, 0],
-    [3, 0, 0],
-    [0, 1 * 1.41358025, 0],
-    [3, 1 * 1.41358025, 0],
-    [0, 0, -2],
-    [3, 0, -2],
-    [0, 1 * 1.41358025, -2],
-    [3, 1 * 1.41358025, -2],
-])"""
-print grid
-
-
-# grid *= grid_spacing
+from ipcamutil import Cam
+from visual_odometry import PinholeCamera
+import marker_utils
+import config.cmarker
 
 
 def draw_points(img, pts, color, radius=3):
@@ -111,7 +62,7 @@ def rotate_points(pts, angle):
     return np.float32(np.dot(pts.reshape(-1, 2), R))
 
 
-class Marker:
+class CalibrationMarker:
     def __init__(self, ellipse, area, num_children):
         self.ellipse = ellipse
         self.center = np.array([ellipse[0][0], ellipse[0][1]])
@@ -122,7 +73,7 @@ class Marker:
         return np.linalg.norm(self.center - point)
 
 
-class MarkerFinder:
+class CalibrationMarkerFinder:
     def __init__(self):
         self.image = None
         self.img_size = None
@@ -136,7 +87,7 @@ class MarkerFinder:
         Searches the contour hierarchy for the indices of all children of the given contour index
         :param idx: The id of the contour to get children of
         :return: Integer Numpy Nx1 array of children indices
-        @type idx: int
+        :type idx: int
         """
         assert self.hierarchy is not None, "contour hierarchy is NoneType"
         assert len(self.hierarchy) > 0, "contour hierarchy empty"
@@ -197,6 +148,7 @@ class MarkerFinder:
             approx_rotated_rect = cv2.boundingRect(rotated_points)
             # If grid width is greater than height and rect width is greater than height
             wrong_rotation = False
+            # TODO: Correct orientation calculation in sort_markers
             if not (grid_size[1] > grid_size[0] and approx_rotated_rect[2] > approx_rotated_rect[3]):
                 # Rotated incorrectly, correct it
                 rotated_points = rotate_points(centers, angle - (math.pi / 2))
@@ -237,7 +189,7 @@ class MarkerFinder:
         cv2.imshow("Processed", processed)
 
         _, self.contours, self.hierarchy = self.find_contours(processed)
-        self.markers = np.array([])  # type: list[Marker]
+        self.markers = np.array([])  # type: list[CalibrationMarker]
 
         found = False
         if len(self.contours) > 1:
@@ -260,7 +212,7 @@ class MarkerFinder:
                 # num of contours must be greater than 5 for fitEllipse to work
                 if len(contour) > 5 and (len(approx) > 4) and \
                         (math.pow(self.img_size / 2.0, 2) > area > config.cmarker.CONTOUR_MIN_AREA) and \
-                        num_children >= 2 and np.all(area > children_areas):
+                                num_children >= 2 and np.all(area > children_areas):
                     # Check ratio to children
                     ratio_correct = False
                     for child in children:
@@ -286,8 +238,8 @@ class MarkerFinder:
                             center_dist = np.linalg.norm(ellipse_center - circle_center)
                             # Make sure approx ellipse is not bigger than approx circle
                             if center_dist < (major + minor) / config.cmarker.CONTOUR_MAX_CENTER_DIST_RATIO and \
-                                    major <= radius * config.cmarker.CONTOUR_MAJOR2RADIUS_RATIO and \
-                                    minor <= radius * config.cmarker.CONTOUR_MINOR2RADIUS_RATIO:
+                                            major <= radius * config.cmarker.CONTOUR_MAJOR2RADIUS_RATIO and \
+                                            minor <= radius * config.cmarker.CONTOUR_MINOR2RADIUS_RATIO:
                                 # Determine if contour is ellipse using difference between ellipse and actual contour
                                 x, y, w, h = cv2.boundingRect(contour)
 
@@ -307,7 +259,7 @@ class MarkerFinder:
                                 shape_diff = cv2.countNonZero(abs_diff) / float(area)
 
                                 if shape_diff < config.cmarker.CONTOUR_ELLIPSE_CONTOUR_DIFF:
-                                    m = Marker(ellipse, area, num_children)
+                                    m = CalibrationMarker(ellipse, area, num_children)
 
                                     # region Check if there is a better marker nearby and delete worse ones
                                     found_duplicate = False
@@ -335,7 +287,7 @@ class MarkerFinder:
             found, self.markers = self.sort_markers(self.markers)
 
             # region Draw found markers, debug only
-            contour_mat = frame.copy()
+            contour_mat = image.copy()
             prev_center = None
             r = 10
             colors = [
@@ -378,60 +330,142 @@ class MarkerFinder:
         return found, self.markers
 
 
+def calc_back_project_error(projected, original):
+    """
+    Calculates the back-projection error of a set of points and their corresponding projected points
+    :param projected: The back-projected points
+    :param original: The original image points
+    :return: Back-projection erorr
+    :rtype: float
+    """
+    # TODO: Add assertions to calc_back_project_error
+    diffs = projected.reshape(-1, 2) - original.reshape(-1, 2)
+    error = 0
+    for i in xrange(len(diffs)):
+        diff = diffs[i]
+        error += np.linalg.norm(diff)
+    error /= len(diffs)
+    return error
+
+
+def back_project_point(u, v, mtx, rvec, tvec, z=0):
+    """
+    Converts a 2D point to a 3D point using a known z value
+
+    :param u: The x coordinate of the 2D point
+    :param v: The y coordinate of the 2D point
+    :param mtx: The camera matrix of intrinsic parameters
+    :param rvec: The extrinsic rotation vectors in the form 1x3
+    :param tvec: The extrinsic translation vectors in the form 1x3
+    :param z: The z coordinate of the point in 3D. This is 0 by default
+    :type z: int
+    """
+
+    """
+    Theory:
+    a 2D point p (u, v, 1).T can be represented as a 3D point P (X, Y, Z).T as follows:
+    p = K(R * P + t) / s
+    where K is camera matrix, R is rotation matrix, t is translation matrix and s is a constant
+    If Z is constant, we can find s:
+    s = ( P + (R^-1)t ) / ( (R^-1)(K^-1)p )
+    thus,
+    s = ( Z + ((R^-1)t)[2, 0] ) / ( (R^-1)(K^-1)p[2,0] )
+    we can then find P using s;
+    P = (R^-1) * (s * (K^-1) * p - t)
+    """
+
+    assert mtx.shape == (3, 3), "camera intrinsic parameters must be a 3x3 matrix: %r" % mtx.shape
+    # TODO: Add back projection assertions
+
+    # Convert matrices to useful formats. Uses notation common for 3d reconstruction such as K, R and t
+    k = mtx
+    p = np.matrix(np.array([u, v, 1]).reshape(3, 1))
+    k_inv = np.matrix(np.linalg.inv(k))
+    r, _ = cv2.Rodrigues(rvec)
+    r_inv = np.matrix(np.linalg.inv(r))
+    t = np.matrix(tvec)
+
+    temp_mtx = r_inv * k_inv * p
+    temp_mtx2 = r_inv * t
+    s = (z + temp_mtx2[2, 0]) / temp_mtx[2, 0]
+    return r_inv * (s * k_inv * p - tvec)
+
+
+ipcam_url = "http://192.168.8.100:8080/"
+# ipcam_url = "http://192.168.1.115:8080/"
+cam = Cam(ipcam_url)
+cam_available = cam.start()
+
+camera_name = "LG-K8_scaled2"
+cam_data = PinholeCamera("camera/" + camera_name + ".npz")
+
+# height, width
+grid_size = (4, 3)
+# all measurements in mm
+grid_spacing = 162
+x_spacing = 212
+y_spacing = 144
+module_y_spacing = 154
+objp = np.zeros((grid_size[1] * grid_size[0], 3), np.float32)
+count = 0
+grid = np.float32([])
+for y in xrange(grid_size[0]):
+    for x in xrange(grid_size[1]):
+        coord = np.array([x * x_spacing, (y * y_spacing) + (int(y / 2) * (module_y_spacing - y_spacing))])
+        objp[count, :2] = coord
+        count += 1
+        if (x == 0 or x == grid_size[1] - 1) and (y == 0 or y == grid_size[0] - 1):
+            coord3D = np.float32([coord[0], coord[1], 0])
+            coord3D_up = np.float32([coord3D[0], coord3D[1], -x_spacing])
+            if len(grid) == 0:
+                grid = np.float32([coord3D, coord3D_up])
+            else:
+                grid = np.vstack((grid, coord3D))
+                grid = np.vstack((grid, coord3D_up))
+
 rvec, tvec = None, None
-# main_img = cv2.imread("img\\Cam.png")
-marker_finder = MarkerFinder()
+c_marker_finder = CalibrationMarkerFinder()
 if cam_available:
     while True:
         if cam.is_opened():
             frame = cam.get_frame()
-            # frame = main_img
             cv2.imshow("Cam", frame)
 
             undistorted = cv2.undistort(frame, cam_data.mtx, cam_data.dist)
 
             img = undistorted.copy()
-            found_markers, detected_markers = marker_finder.find(frame)
+            # Look for markers in distorted image
+            found_markers, c_markers = c_marker_finder.find(undistorted)
             if found_markers:
-                imgp = np.float32([marker.center for marker in detected_markers])
+                imgp = np.float32([marker.center for marker in c_markers])
             else:
                 imgp = np.float32([])
 
             if len(imgp) == len(objp):
                 # TODO: Add check to see if solvePnP was already evaluated
                 # Find the rotation and translation vectors.
-                ret, rvec, tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam_data.mtx,
-                                               cam_data.dist, flags=cv2.SOLVEPNP_ITERATIVE)
+                ret, rvec, tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam_data.mtx, None,
+                                               flags=cv2.SOLVEPNP_ITERATIVE)
+
+                objp_screen, jac = cv2.projectPoints(objp, rvec, tvec, cam_data.mtx, distCoeffs=None)
+                error = calc_back_project_error(objp_screen, imgp)
+                print "PnP Back-projection Error: {}".format(round(error, 3))
 
                 ret, x, y = marker_utils.find_marker(undistorted)
-                # x = 550
-                # y = 400
                 if x is not None and y is not None:
-                    K = cam_data.mtx
-                    R, jac = cv2.Rodrigues(rvec)
+                    P = back_project_point(x, y, cam_data.mtx, rvec, tvec)
+                    print "x: {}mm, y: {}mm".format(round(P[0, 0], 3), round(P[1, 0], 3))
 
-                    Z = 0
+                    """print "Camera location: {}".format(tvec)
+                    ray = np.array([tvec, P])
+                    print "Ray: {}".format(ray)
+                    print "Ray magnitude: {}mm".format(np.linalg.norm(ray[0] - ray[1]))"""
 
-                    R_inv = np.matrix(np.linalg.inv(R))
-                    K_inv = np.matrix(np.linalg.inv(K))
-                    p = np.matrix(np.array([x, y, 1]).reshape(3, 1))
-                    tvec_m = np.matrix(tvec)
-
-                    tempMat = R_inv * K_inv * p
-                    tempMat2 = R_inv * tvec_m
-                    s = Z + tempMat2[2, 0]
-                    s /= tempMat[2, 0]
-                    P = R_inv * (s * K_inv * p - tvec)
-                    print "P: {}".format(np.round(P, 2) / 1000)
-
-                    xr = P[0]
-                    yr = P[1]
-
-                    new_points = np.float32([[xr, yr, Z]])
+                    new_points = np.float32([[P[0, 0], P[1, 0], P[2, 0]]])
                     screen_points, jac = cv2.projectPoints(new_points, rvec, tvec, cam_data.mtx, distCoeffs=None)
                     backprojection_error = np.linalg.norm(
                         np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
-                    print "Backprojection Error: {}".format(backprojection_error)
+                    print "Backprojection Error: {}".format(round(backprojection_error, 3))
                     center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
                     cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
                     cv2.circle(img, center, 5, (255, 0, 0), -1)
