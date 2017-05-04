@@ -25,8 +25,10 @@ class Cam:
         if self.capture.open(self.url):
             self.thread.start()
             print "Camera stream started."
+            return True
         else:
             print "Error opening camera."
+            return False
 
     def run(self):
         while not self.thread_cancelled:

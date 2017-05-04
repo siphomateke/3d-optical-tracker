@@ -8,25 +8,41 @@ import math
 from types import *
 from matplotlib import pyplot as plt
 
-# ipcam_url = "http://192.168.8.103:8080/"
-ipcam_url = "http://192.168.1.115:8080/"
+ipcam_url = "http://192.168.8.100:8080/"
+# ipcam_url = "http://192.168.1.115:8080/"
 cam = Cam(ipcam_url)
-cam.start()
+cam_available = cam.start()
 
 camera_name = "LG-K8_scaled2"
 cam_data = PinholeCamera("camera/" + camera_name + ".npz")
 
-grid_size = (2, 4)
+# height, width
+grid_size = (4, 3)
 grid_spacing = 162  # mm
+x_spacing = 212
+y_spacing = 144
+module_y_spacing = 154
 objp = np.zeros((grid_size[1] * grid_size[0], 3), np.float32)
 count = 0
+grid = np.float32([])
 for y in xrange(grid_size[0]):
     for x in xrange(grid_size[1]):
-        objp[count, :2] = np.array([x, y * 1.41358025])
+        coord = np.array([x * x_spacing, (y * y_spacing) + (int(y / 2) * (module_y_spacing - y_spacing))])
+        objp[count, :2] = coord
         count += 1
+        if (x == 0 or x == grid_size[1] - 1) and (y == 0 or y == grid_size[0] - 1):
+            coord3D = np.float32([coord[0], coord[1], 0])
+            coord3D_up = np.float32([coord3D[0], coord3D[1], -x_spacing])
+            if len(grid) == 0:
+                grid = np.float32([coord3D, coord3D_up])
+            else:
+                grid = np.vstack((grid, coord3D))
+                grid = np.vstack((grid, coord3D_up))
 # objp *= grid_spacing
+# objp /= x_spacing
+# grid /= x_spacing
 
-grid = np.float32([
+"""grid = np.float32([
     [0, 0, 0],
     [3, 0, 0],
     [0, 1 * 1.41358025, 0],
@@ -35,7 +51,8 @@ grid = np.float32([
     [3, 0, -2],
     [0, 1 * 1.41358025, -2],
     [3, 1 * 1.41358025, -2],
-])
+])"""
+print grid
 
 
 # grid *= grid_spacing
@@ -300,86 +317,89 @@ class MarkerFinder:
         return len(self.markers) > 0, self.markers
 
 
-rvecs, tvecs = None, None
+rvec, tvec = None, None
 # main_img = cv2.imread("img\\Cam.png")
 marker_finder = MarkerFinder()
-while True:
-    if cam.is_opened():
-        frame = cam.get_frame()
-        # frame = main_img
-        cv2.imshow("Cam", frame)
+if cam_available:
+    while True:
+        if cam.is_opened():
+            frame = cam.get_frame()
+            # frame = main_img
+            cv2.imshow("Cam", frame)
 
-        undistorted = cv2.undistort(frame, cam_data.mtx, cam_data.dist)
+            undistorted = cv2.undistort(frame, cam_data.mtx, cam_data.dist)
 
-        img = frame.copy()
-        found_markers, detected_markers = marker_finder.find(frame)
-        if found_markers:
-            imgp = np.float32([marker.center for marker in detected_markers])
-        else:
-            imgp = np.float32([])
+            img = undistorted.copy()
+            found_markers, detected_markers = marker_finder.find(frame)
+            if found_markers:
+                imgp = np.float32([marker.center for marker in detected_markers])
+            else:
+                imgp = np.float32([])
 
-        if len(imgp) == len(objp):
-            # TODO: Add check to see if solvePnP was already evaluated
-            # Find the rotation and translation vectors.
-            ret, rvecs, tvecs = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam_data.mtx,
-                                             cam_data.dist, flags=cv2.SOLVEPNP_ITERATIVE)
+            if len(imgp) == len(objp):
+                # TODO: Add check to see if solvePnP was already evaluated
+                # Find the rotation and translation vectors.
+                ret, rvec, tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam_data.mtx,
+                                               cam_data.dist, flags=cv2.SOLVEPNP_ITERATIVE)
 
-            ret, x, y = marker_utils.find_marker(undistorted)
-            # x = grid_points2[0].ravel()[0]
-            # y = grid_points2[0].ravel()[1]
-            if x is not None and y is not None:
-                R, jac = cv2.Rodrigues(rvecs)
+                ret, x, y = marker_utils.find_marker(undistorted)
+                # x = 550
+                # y = 400
+                if x is not None and y is not None:
+                    # TODO: Fix 3d position calculation
+                    K = cam_data.mtx
+                    R, jac = cv2.Rodrigues(rvec)
 
-                best_f = None
-                min_error = None
-                # for f in np.arange(21.6,21.7, 0.00001):
-                f = 21.69
-                q = (2 * f) / float(cam_data.fx + cam_data.fy)
-                zp = f  # focal length of camera
-                xp = (x - cam_data.cx) * zp / cam_data.fx
-                yp = (y - cam_data.cy) * zp / cam_data.fy
+                    Z = 0
 
-                pos = np.array([xp, yp, zp]).reshape(3, 1)
-                T = tvecs.reshape(3, 1)
+                    R_inv = np.matrix(np.linalg.inv(R))
+                    K_inv = np.matrix(np.linalg.inv(K))
+                    p = np.matrix(np.array([x, y, 1]).reshape(3, 1))
+                    tvec_m = np.matrix(tvec)
 
-                R_inv = np.linalg.inv(R)
-                projection = np.dot(R_inv, (pos - T))
-                xr = projection[0]
-                yr = projection[1]
-                zr = projection[2]
+                    print K_inv
+                    print R_inv
+                    print tvec_m
+                    print p
 
-                new_points = np.float32([[xr, yr, 0]])
-                screen_points, jac = cv2.projectPoints(new_points, rvecs, tvecs, cam_data.mtx, cam_data.dist)
-                backprojection_error = np.linalg.norm(
-                    np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
-                # print "Backprojection Error: {}".format(backprojection_error)
-                center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
-                cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
-                cv2.circle(img, center, 5, (255, 0, 0), -1)
-                # print projection
-                # print f, backprojection_error
-                if min_error is None:
-                    best_f = f
-                    min_error = backprojection_error
-                elif backprojection_error < min_error:
-                    best_f = f
-                    min_error = backprojection_error
-                    # print "f: {}, e: {}".format(best_f, min_error)
+                    tempMat = R_inv * K_inv * p
+                    tempMat2 = R_inv * tvec_m
+                    print "tempMat: {}".format(tempMat)
+                    print "tempMat2: {}".format(tempMat2)
+                    s = Z + tempMat2[2, 0]
+                    s /= tempMat[2, 0]
+                    print s
+                    print (K_inv * (p - tvec))
+                    print s * (K_inv * (p - tvec))
+                    P = R_inv * (s * K_inv * p - tvec)
+                    print "P: {}".format(P)
 
-            grid_points, jac = cv2.projectPoints(objp, rvecs, tvecs, cam_data.mtx, cam_data.dist)
-            if np.all(abs(grid_points) < 1e6):
-                draw_points(img, grid_points, (255, 255, 0), 5)
+                    xr = P[0]
+                    yr = P[1]
 
-            grid_points2, jac = cv2.projectPoints(grid, rvecs, tvecs, cam_data.mtx, cam_data.dist)
-            if np.all(abs(grid_points2) < 1e6):
-                draw_grid(img, grid_points2, (0, 255, 0))
-        if np.all(abs(imgp) < 1e6):
-            draw_points(img, imgp, (255, 0, 255))
-        cv2.imshow("Visualization", img)
+                    new_points = np.float32([[xr, yr, Z]])
+                    screen_points, jac = cv2.projectPoints(new_points, rvec, tvec, cam_data.mtx, None)
+                    backprojection_error = np.linalg.norm(
+                        np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
+                    # print "Backprojection Error: {}".format(backprojection_error)
+                    center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
+                    cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
+                    cv2.circle(img, center, 5, (255, 0, 0), -1)
 
-    key = cv2.waitKey(1)
-    if key & 0xFF == ord('q'):
-        break
+                grid_points, jac = cv2.projectPoints(objp, rvec, tvec, cam_data.mtx, cam_data.dist)
+                if np.all(abs(grid_points) < 1e6):
+                    draw_points(img, grid_points, (255, 255, 0), 5)
+
+                grid_points2, jac = cv2.projectPoints(grid, rvec, tvec, cam_data.mtx, cam_data.dist)
+                if np.all(abs(grid_points2) < 1e6):
+                    draw_grid(img, grid_points2, (0, 255, 0))
+            if np.all(abs(imgp) < 1e6):
+                draw_points(img, imgp, (255, 0, 255))
+            cv2.imshow("Visualization", img)
+
+        key = cv2.waitKey(1)
+        if key & 0xFF == ord('q'):
+            break
 
 cam.shut_down()
 cv2.destroyAllWindows()
