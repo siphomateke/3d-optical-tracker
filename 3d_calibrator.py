@@ -401,6 +401,7 @@ camera_name = "LG-K8_scaled2"
 cam_data = PinholeCamera("camera/" + camera_name + ".npz")
 
 # height, width
+# TODO: Make grid shape orientation determinable
 grid_size = (4, 3)
 # all measurements in mm
 grid_spacing = 162
@@ -445,8 +446,7 @@ if cam_available:
             if len(imgp) == len(objp):
                 # TODO: Add check to see if solvePnP was already evaluated
                 # Find the rotation and translation vectors.
-                ret, rvec, tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam_data.mtx, None,
-                                               flags=cv2.SOLVEPNP_ITERATIVE)
+                ret, rvec, tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam_data.mtx, None)
 
                 objp_screen, jac = cv2.projectPoints(objp, rvec, tvec, cam_data.mtx, distCoeffs=None)
                 error = calc_back_project_error(objp_screen, imgp)
