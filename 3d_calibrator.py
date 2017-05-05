@@ -2,9 +2,10 @@ import math
 from types import *
 import cv2
 import numpy as np
+from imutils import resize_img
 from matplotlib import pyplot as plt
 
-from ipcamutil import Cam
+from camutil import Cam, CamManager
 from visual_odometry import PinholeCamera
 import marker_utils
 import config.cmarker
@@ -150,7 +151,7 @@ class CalibrationMarkerFinder:
             wrong_rotation = False
             # If the points shape does not match the required grid shape
             if not ((grid_size[1] > grid_size[0] and w > h) or
-                    (grid_size[1] < grid_size[0] and w < h)):
+                        (grid_size[1] < grid_size[0] and w < h)):
                 # Rotated incorrectly, correct it
                 rotated_points = rotate_points(centers, angle - (math.pi / 2))
                 wrong_rotation = True
@@ -187,7 +188,6 @@ class CalibrationMarkerFinder:
         self.gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         processed = self.process_image(self.gray)
-        cv2.imshow("Processed", processed)
 
         _, self.contours, self.hierarchy = self.find_contours(processed)
         self.markers = np.array([])  # type: list[CalibrationMarker]
@@ -394,11 +394,10 @@ def back_project_point(u, v, mtx, rvec, tvec, z=0):
 
 ipcam_url = "http://192.168.8.100:8080/"
 # ipcam_url = "http://192.168.1.115:8080/"
-cam = Cam(ipcam_url)
-cam_available = cam.start()
-
-camera_name = "LG-K8_scaled2"
-cam_data = PinholeCamera("camera/" + camera_name + ".npz")
+cam_manager = CamManager([
+    Cam(ipcam_url, "camera/LG-K8_scaled2.npz", name="LG_K8")
+])
+cam_manager.start()
 
 # height, width
 # TODO: Make grid shape orientation determinable
@@ -425,15 +424,14 @@ for y in xrange(grid_size[0]):
                 grid = np.vstack((grid, coord3D))
                 grid = np.vstack((grid, coord3D_up))
 
-rvec, tvec = None, None
 c_marker_finder = CalibrationMarkerFinder()
-if cam_available:
+if cam_manager.available_cameras > 0:
     while True:
-        if cam.is_opened():
+        for cam, frame in cam_manager.get_frames():
             frame = cam.get_frame()
-            cv2.imshow("Cam", frame)
+            cam.imshow("", frame)
 
-            undistorted = cv2.undistort(frame, cam_data.mtx, cam_data.dist)
+            undistorted = cv2.undistort(frame, cam.data.mtx, cam.data.dist)
 
             img = undistorted.copy()
             # Look for markers in distorted image
@@ -446,15 +444,15 @@ if cam_available:
             if len(imgp) == len(objp):
                 # TODO: Add check to see if solvePnP was already evaluated
                 # Find the rotation and translation vectors.
-                ret, rvec, tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam_data.mtx, None)
+                ret, cam.data.rvec, cam.data.tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2), cam.data.mtx, None)
 
-                objp_screen, jac = cv2.projectPoints(objp, rvec, tvec, cam_data.mtx, distCoeffs=None)
+                objp_screen, jac = cv2.projectPoints(objp, cam.data.rvec, cam.data.tvec, cam.data.mtx, distCoeffs=None)
                 error = calc_back_project_error(objp_screen, imgp)
                 print "PnP Back-projection Error: {}".format(round(error, 3))
 
                 ret, x, y = marker_utils.find_marker(undistorted)
                 if x is not None and y is not None:
-                    P = back_project_point(x, y, cam_data.mtx, rvec, tvec)
+                    P = back_project_point(x, y, cam.data.mtx, cam.data.rvec, cam.data.tvec)
                     print "x: {}mm, y: {}mm".format(round(P[0, 0], 3), round(P[1, 0], 3))
 
                     """print "Camera location: {}".format(tvec)
@@ -463,7 +461,7 @@ if cam_available:
                     print "Ray magnitude: {}mm".format(np.linalg.norm(ray[0] - ray[1]))"""
 
                     new_points = np.float32([[P[0, 0], P[1, 0], P[2, 0]]])
-                    screen_points, jac = cv2.projectPoints(new_points, rvec, tvec, cam_data.mtx, distCoeffs=None)
+                    screen_points, jac = cv2.projectPoints(new_points, cam.data.rvec, cam.data.tvec, cam.data.mtx, distCoeffs=None)
                     backprojection_error = np.linalg.norm(
                         np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
                     print "Backprojection Error: {}".format(round(backprojection_error, 3))
@@ -471,14 +469,14 @@ if cam_available:
                     cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
                     cv2.circle(img, center, 5, (255, 0, 0), -1)
 
-                grid_points2, jac = cv2.projectPoints(grid, rvec, tvec, cam_data.mtx, distCoeffs=None)
+                grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx, distCoeffs=None)
                 if np.all(abs(grid_points2) < 1e6):
                     draw_grid(img, grid_points2, (0, 255, 0))
-            cv2.imshow("Visualization", img)
+            cam.imshow("Visualization", img)
 
         key = cv2.waitKey(1)
         if key & 0xFF == ord('q'):
             break
 
-cam.shut_down()
+cam_manager.shut_down()
 cv2.destroyAllWindows()

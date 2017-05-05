@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-import ipcamutil
+import camutil
 import math
 from urllib2 import urlopen
 import json
@@ -164,7 +164,7 @@ class Sensor:
 
 
 ipcamera_url = "http://192.168.8.100:8080/"
-cam = ipcamutil.Cam(ipcamera_url)
+cam = camutil.Cam(ipcamera_url)
 cam.start()
 sensor = Sensor(ipcamera_url)
 

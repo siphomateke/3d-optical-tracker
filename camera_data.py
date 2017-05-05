@@ -1,5 +1,5 @@
 import cv2
-from ipcamutil import Cam
+from camutil import Cam
 from camera_sensors import CameraSensors
 from visual_odometry import PinholeCamera
 import numpy as np

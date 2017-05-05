@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-import ipcamutil
+import camutil
 from visual_odometry import PinholeCamera
 from matplotlib import pyplot as plt
 
@@ -102,7 +102,7 @@ def run(frame):
 
 
 def main():
-    cam = ipcamutil.Cam("http://192.168.8.103:8080/")
+    cam = camutil.Cam("http://192.168.8.103:8080/")
     cam.start()
 
     cv2.namedWindow("cam")
