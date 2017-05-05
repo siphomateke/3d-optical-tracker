@@ -395,7 +395,7 @@ def back_project_point(u, v, mtx, rvec, tvec, z=0):
 ipcam_url = "http://192.168.8.100:8080/"
 # ipcam_url = "http://192.168.1.115:8080/"
 cam_manager = CamManager([
-    Cam(ipcam_url, "camera/LG-K8_scaled2.npz", name="LG_K8")
+    Cam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8")
 ])
 cam_manager.start()
 
@@ -441,6 +441,9 @@ if cam_manager.available_cameras > 0:
             else:
                 imgp = np.float32([])
 
+            ret, x, y = marker_utils.find_marker(undistorted)
+            if x is not None and y is not None:
+                cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
             if len(imgp) == len(objp):
                 # TODO: Add check to see if solvePnP was already evaluated
                 # Find the rotation and translation vectors.
@@ -450,7 +453,6 @@ if cam_manager.available_cameras > 0:
                 error = calc_back_project_error(objp_screen, imgp)
                 print "PnP Back-projection Error: {}".format(round(error, 3))
 
-                ret, x, y = marker_utils.find_marker(undistorted)
                 if x is not None and y is not None:
                     P = back_project_point(x, y, cam.data.mtx, cam.data.rvec, cam.data.tvec)
                     print "x: {}mm, y: {}mm".format(round(P[0, 0], 3), round(P[1, 0], 3))
@@ -466,7 +468,6 @@ if cam_manager.available_cameras > 0:
                         np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
                     print "Backprojection Error: {}".format(round(backprojection_error, 3))
                     center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
-                    cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
                     cv2.circle(img, center, 5, (255, 0, 0), -1)
 
                 grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx, distCoeffs=None)

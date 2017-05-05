@@ -19,7 +19,7 @@ class CamData:
 
 
 class Cam:
-    def __init__(self, url, data_filename, name="Cam1"):
+    def __init__(self, url, data_filename="", name="Cam1"):
         self.url = url + "video"
         self.name = name
         self.capture = cv2.VideoCapture()
@@ -29,7 +29,10 @@ class Cam:
         self.opened = False
 
         self.data_filename = data_filename
-        self.data = CamData(data_filename)
+        if len(self.data_filename) > 0:
+            self.data = CamData(data_filename)
+        else:
+            self.data = None
 
         if self.capture.open(self.url):
             ret, img = self.capture.read()

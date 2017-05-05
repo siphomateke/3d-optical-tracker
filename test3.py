@@ -29,7 +29,7 @@ class Marker:
         self.loc += (self.dest - self.loc) / self.smoothing
 
 
-marker = Marker(1)
+marker = Marker(4)
 loc_mat = np.zeros((640, 1200, 3), np.uint8)
 img_size_set = False
 prevxd, prevyd = None, None
