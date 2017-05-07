@@ -46,7 +46,7 @@ class NetworkSocket(ProgramThread):
     def close(self):
         if self.open:
             self.client_socket.close()
-        self.shut_down_thread()
+        self.stop_thread()
 
 
 """size = 1024

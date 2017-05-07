@@ -21,7 +21,7 @@ class ProgramThread:
     def is_running(self):
         return self.thread.isAlive()
 
-    def shut_down_thread(self):
+    def stop_thread(self):
         self.thread_cancelled = True
         # block while waiting for thread to terminate
         while self.thread.isAlive():

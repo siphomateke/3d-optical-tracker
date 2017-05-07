@@ -90,7 +90,7 @@ class Cam(ProgramThread):
         return self.frame
 
     def shut_down(self):
-        self.shut_down_thread()
+        self.stop_thread()
 
     def imshow(self, name, img):
         if len(name) > 0:
