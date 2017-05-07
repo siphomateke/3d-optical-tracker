@@ -1,4 +1,3 @@
-import time
 from urllib2 import urlopen
 from urllib2 import HTTPError, URLError
 import xml.etree.ElementTree as ET
@@ -22,19 +21,14 @@ class CamData:
         self.tvec = None
 
 
-class Cam(ProgramThread):
-    def __init__(self, url, data_filename="", name="Cam1"):
-        ProgramThread.__init__(self, self.run)
-        self.url = url
-        self.url_video = self.url + "video"
+class CamBase:
+    def __init__(self, data_filename="", name="Cam1"):
         self.name = name
         self.capture = cv2.VideoCapture()
         self.frame = None
-        self.opened = False
+        self.ready = False
 
-        self.torch_on = False
-        self.mean_brightness = None
-        self.prev_mean_brightness = None
+        # TODO: Add assertions for loading camera data
 
         self.data_filename = data_filename
         if len(self.data_filename) > 0:
@@ -42,19 +36,48 @@ class Cam(ProgramThread):
         else:
             self.data = None
 
-        if self.capture.open(self.url_video):
-            ret, img = self.capture.read()
-            self.shape = img.shape
-        else:
-            self.shape = None
-
-        print "Camera initialised."
-
-    def from_file(self, filename):
-        self.frame = cv2.imread(filename)
+        print "{} initialised.".format(self.name)
 
     def start(self):
-        print("Attempting connection to {} ...".format(self.url_video))
+        """
+        Initialize camera settings or connections
+        """
+        return True
+
+    def stop(self):
+        """
+        Wrap up  execution or stop threads
+        """
+        return True
+
+    def imshow(self, name, img):
+        if len(name) > 0:
+            cv2.imshow("{} - {}".format(self.name, name), img)
+        else:
+            cv2.imshow("{}".format(self.name, name), img)
+
+
+class ImgCam(CamBase):
+    def __init__(self, filename, data_filename="", name="ImgCam1"):
+        CamBase.__init__(self, data_filename=data_filename, name=name)
+        # TODO: Add file checks for reading image file
+        self.frame = cv2.imread(filename)
+        self.ready = True
+
+
+class IPCam(CamBase, ProgramThread):
+    def __init__(self, url, data_filename="", name="IPCam1"):
+        CamBase.__init__(self, data_filename=data_filename, name=name)
+        ProgramThread.__init__(self, self.run)
+        self.url = url
+        self.url_video = self.url + "video"
+
+        self.torch_on = False
+        self.mean_brightness = None
+        self.prev_mean_brightness = None
+
+    def start(self):
+        print("{} attempting connection to {} ...".format(self.name, self.url_video))
         if self.capture.open(self.url_video):
             self.request_action("disabletorch")
             self.start_thread()
@@ -63,6 +86,16 @@ class Cam(ProgramThread):
         else:
             print "Error opening camera."
             return False
+
+    def run(self):
+        ret, img = self.capture.read()
+        if ret:
+            self.frame = img.copy()
+            self.ready = True
+            # self.check_lighting()
+
+    def stop(self):
+        self.stop_thread()
 
     def check_lighting(self):
         hsv = cv2.cvtColor(self.frame, cv2.COLOR_BGR2HSV)
@@ -77,28 +110,12 @@ class Cam(ProgramThread):
                     self.request_action("disabletorch")
         self.prev_mean_brightness = self.mean_brightness
 
-    def run(self):
-        ret, img = self.capture.read()
-        self.frame = img.copy()
-        self.opened = True
-        # self.check_lighting()
-
-    def is_opened(self):
-        return self.opened
-
-    def get_frame(self):
-        return self.frame
-
-    def shut_down(self):
-        self.stop_thread()
-
-    def imshow(self, name, img):
-        if len(name) > 0:
-            cv2.imshow("{} - {}".format(self.name, name), img)
-        else:
-            cv2.imshow("{}".format(self.name, name), img)
-
     def request_action(self, command):
+        """
+        Sends a http command to the ip camera
+        :param command: The command to execute. e.g 'enabletorch'
+        :return: Whether the command was successfully executed
+        """
         success = True
         try:
             response = urlopen(self.url + command)
@@ -121,8 +138,11 @@ class Cam(ProgramThread):
 
 
 class CamManager:
+    """
+    Controls and stores a group of cameras and their settings
+    """
     def __init__(self, cameras):
-        self.cameras = cameras  # type: list[Cam]
+        self.cameras = cameras  # type: list[CamBase]
         self._available_cameras = 0
 
     def start(self):
@@ -138,10 +158,9 @@ class CamManager:
 
     def get_frames(self):
         for cam in self.cameras:
-            if cam.is_opened():
-                frame = cam.get_frame()
-                yield cam, frame
+            if cam.ready:
+                yield cam
 
-    def shut_down(self):
+    def stop(self):
         for cam in self.cameras:
-            cam.shut_down()
+            cam.stop()

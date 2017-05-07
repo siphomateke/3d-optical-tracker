@@ -6,11 +6,12 @@ import cv2
 import numpy as np
 from imutils import resize_img
 from matplotlib import pyplot as plt
+import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui
 from threading import Thread, ThreadError
 
 import visual
-from camutil import Cam, CamManager
+from camutil import IPCam, CamManager
 from visual_odometry import PinholeCamera
 import marker_utils
 import config.cmarker
@@ -400,7 +401,7 @@ def back_project_point(u, v, mtx, rvec, tvec, z=0):
 ipcam_url = "http://192.168.8.100:8080/"
 # ipcam_url = "http://192.168.1.115:8080/"
 cam_manager = CamManager([
-    Cam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
+    IPCam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
     # Cam("http://192.168.8.103:8080/", name="Samsung Galaxy")
 ])
 cam_manager.start()
@@ -408,7 +409,7 @@ c_marker_finder = CalibrationMarkerFinder()
 
 # height, width
 # TODO: Make grid shape orientation determinable
-grid_size = (4, 3)
+grid_size = (4, 2)
 # all measurements in mm
 grid_spacing = 162
 x_spacing = 212
@@ -442,56 +443,59 @@ class CVThread():
         self.thread.start()
 
     def process(self):
-        for cam, frame in cam_manager.get_frames():
-            frame = cam.get_frame()
-            # cam.imshow("", frame)
+        if cam_manager.available_cameras > 0:
+            for cam in cam_manager.get_frames():
+                frame = cam.frame
+                # cam.imshow("", frame)
 
-            undistorted = cv2.undistort(frame, cam.data.mtx, cam.data.dist)
+                undistorted = cv2.undistort(frame, cam.data.mtx, cam.data.dist)
 
-            img = undistorted.copy()
-            # Look for markers in distorted image
-            found_markers, c_markers = c_marker_finder.find(undistorted)
-            if found_markers:
-                imgp = np.float32([marker.center for marker in c_markers])
-            else:
-                imgp = np.float32([])
+                img = undistorted.copy()
+                # Look for markers in distorted image
+                found_markers, c_markers = c_marker_finder.find(undistorted)
+                if found_markers:
+                    imgp = np.float32([marker.center for marker in c_markers])
+                else:
+                    imgp = np.float32([])
 
-            ret, x, y = marker_utils.find_marker(undistorted)
-            if x is not None and y is not None:
-                cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
-            if len(imgp) == len(objp):
-                # TODO: Add check to see if solvePnP was already evaluated
-                # Find the rotation and translation vectors.
-                ret, cam.data.rvec, cam.data.tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2),
-                                                                 cam.data.mtx, None)
-
-                objp_screen, jac = cv2.projectPoints(objp, cam.data.rvec, cam.data.tvec, cam.data.mtx, distCoeffs=None)
-                error = calc_back_project_error(objp_screen, imgp)
-                # print "PnP Back-projection Error: {}".format(round(error, 3))
-
+                ret, x, y = marker_utils.find_marker(undistorted)
                 if x is not None and y is not None:
-                    P = back_project_point(x, y, cam.data.mtx, cam.data.rvec, cam.data.tvec)
-                    # print "x: {}mm, y: {}mm".format(round(P[0, 0], 3), round(P[1, 0], 3))
+                    cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
+                if len(imgp) == len(objp):
+                    # TODO: Add check to see if solvePnP was already evaluated
+                    # Find the rotation and translation vectors.
+                    ret, cam.data.rvec, cam.data.tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2),
+                                                                     cam.data.mtx, None)
 
-                    """print "Camera location: {}".format(tvec)
-                    ray = np.array([tvec, P])
-                    print "Ray: {}".format(ray)
-                    print "Ray magnitude: {}mm".format(np.linalg.norm(ray[0] - ray[1]))"""
+                    objp_screen, jac = cv2.projectPoints(objp, cam.data.rvec, cam.data.tvec, cam.data.mtx,
+                                                         distCoeffs=None)
+                    error = calc_back_project_error(objp_screen, imgp)
+                    # print "PnP Back-projection Error: {}".format(round(error, 3))
 
-                    new_points = np.float32([[P[0, 0], P[1, 0], P[2, 0]]])
-                    screen_points, jac = cv2.projectPoints(new_points, cam.data.rvec, cam.data.tvec, cam.data.mtx,
-                                                           distCoeffs=None)
-                    backprojection_error = np.linalg.norm(
-                        np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
-                    # print "Backprojection Error: {}".format(round(backprojection_error, 3))
-                    center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
-                    cv2.circle(img, center, 5, (255, 0, 0), -1)
+                    if x is not None and y is not None:
+                        P = back_project_point(x, y, cam.data.mtx, cam.data.rvec, cam.data.tvec)
+                        # print "x: {}mm, y: {}mm".format(round(P[0, 0], 3), round(P[1, 0], 3))
 
-                grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx, distCoeffs=None)
-                if np.all(abs(grid_points2) < 1e6):
-                    draw_grid(img, grid_points2, (0, 255, 0))
-            cam.imshow("Visualization", img)
-        cv2.waitKey(1)
+                        """print "Camera location: {}".format(tvec)
+                        ray = np.array([tvec, P])
+                        print "Ray: {}".format(ray)
+                        print "Ray magnitude: {}mm".format(np.linalg.norm(ray[0] - ray[1]))"""
+
+                        new_points = np.float32([[P[0, 0], P[1, 0], P[2, 0]]])
+                        screen_points, jac = cv2.projectPoints(new_points, cam.data.rvec, cam.data.tvec, cam.data.mtx,
+                                                               distCoeffs=None)
+                        backprojection_error = np.linalg.norm(
+                            np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
+                        # print "Backprojection Error: {}".format(round(backprojection_error, 3))
+                        center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
+                        cv2.circle(img, center, 5, (255, 0, 0), -1)
+
+                    grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx,
+                                                          distCoeffs=None)
+                    if np.all(abs(grid_points2) < 1e6):
+                        draw_grid(img, grid_points2, (0, 255, 0))
+                cam.imshow("Visualization", img)
+            cv2.waitKey(1)
 
     def run(self):
         while not self.thread_cancelled:
@@ -518,34 +522,42 @@ def main(dt):
             camera = my_app.get_gl_item("camera")
             r = cam.data.rvec * (180 / math.pi)
             camera.resetTransform()
-            # camera.rotate(r[0], 1, 0, 0)
-            # camera.rotate(r[1], 0, 1, 0)
-            # camera.rotate(r[2], 0, 0, 1)
-            t = cam.data.tvec / 1000.0  # mm to m
+            t = cam.data.tvec / 1000.0
             t *= 4
             camera.translate(t[0], -t[1], t[2])
+            camera.rotate(r[0], 1, 0, 0)
+            camera.rotate(-r[1], 0, 1, 0)
+            camera.rotate(r[2], 0, 0, 1)
             camera.rotate(-90, 1, 0, 0)
+            tr_og = camera.transform()
+            tr = pg.transformToArray(tr_og)
+            true_translate = np.array([tr[0][3], tr[1][3], tr[2][3]])
+
+            camera_ray = my_app.get_gl_item("camera_ray")
+            pos = np.float32([[0, 0, 0], [true_translate[0], true_translate[1], true_translate[2]]])
+            camera_ray.setData(pos=pos)
 
 
 def on_quit():
-    cam_manager.shut_down()
+    cam_manager.stop()
     cv2.destroyAllWindows()
     cv_thread.shut_down()
 
 
-if cam_manager.available_cameras > 0:
-    app = QtGui.QApplication(sys.argv)
-    my_app = visual.App()
+app = QtGui.QApplication(sys.argv)
+my_app = visual.App()
 
-    my_app.canvas3d.setBackgroundColor([64, 64, 64])
+my_app.canvas3d.setBackgroundColor([64, 64, 64])
 
-    camera = visual.create_camera(np.zeros(3))
-    my_app.add_gl_item("camera", camera)
+camera = visual.create_camera(np.zeros(3))
+my_app.add_gl_item("camera", camera)
+camera_ray = visual.create_line(np.array([[0, 0, 0], [0, 0, 0]]), color=[1, 1, 0, 1])
+my_app.add_gl_item("camera_ray", camera_ray)
 
-    # loop event
-    my_app.anim(main)
-    # on quit events
-    my_app.cleanup(on_quit)
+# loop event
+my_app.anim(main)
+# on quit events
+my_app.cleanup(on_quit)
 
-    my_app.show()
-    sys.exit(app.exec_())
+my_app.show()
+sys.exit(app.exec_())
