@@ -2,6 +2,7 @@ import time
 from urllib2 import urlopen
 from urllib2 import HTTPError, URLError
 import xml.etree.ElementTree as ET
+from threadutil import ProgramThread
 from threading import Thread, ThreadError
 import cv2
 import numpy as np
@@ -21,14 +22,13 @@ class CamData:
         self.tvec = None
 
 
-class Cam:
+class Cam(ProgramThread):
     def __init__(self, url, data_filename="", name="Cam1"):
+        ProgramThread.__init__(self, self.run)
         self.url = url
         self.url_video = self.url + "video"
         self.name = name
         self.capture = cv2.VideoCapture()
-        self.thread_cancelled = False
-        self.thread = Thread(target=self.run)
         self.frame = None
         self.opened = False
 
@@ -50,11 +50,14 @@ class Cam:
 
         print "Camera initialised."
 
+    def from_file(self, filename):
+        self.frame = cv2.imread(filename)
+
     def start(self):
         print("Attempting connection to {} ...".format(self.url_video))
         if self.capture.open(self.url_video):
             self.request_action("disabletorch")
-            self.thread.start()
+            self.start_thread()
             print "Camera stream started."
             return True
         else:
@@ -75,14 +78,10 @@ class Cam:
         self.prev_mean_brightness = self.mean_brightness
 
     def run(self):
-        while not self.thread_cancelled:
-            try:
-                ret, img = self.capture.read()
-                self.frame = img.copy()
-                self.opened = True
-                # self.check_lighting()
-            except ThreadError:
-                self.thread_cancelled = True
+        ret, img = self.capture.read()
+        self.frame = img.copy()
+        self.opened = True
+        # self.check_lighting()
 
     def is_opened(self):
         return self.opened
@@ -90,15 +89,8 @@ class Cam:
     def get_frame(self):
         return self.frame
 
-    def is_running(self):
-        return self.thread.isAlive()
-
     def shut_down(self):
-        self.thread_cancelled = True
-        # block while waiting for thread to terminate
-        while self.thread.isAlive():
-            time.sleep(1)
-        return True
+        self.shut_down_thread()
 
     def imshow(self, name, img):
         if len(name) > 0:
