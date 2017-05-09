@@ -1,6 +1,6 @@
 import socket
 import select
-import math
+import json
 from threadutil import ProgramThread
 
 
@@ -24,12 +24,19 @@ class NetworkSocket(ProgramThread):
         print "Listening on port {}".format(self.port)
         self.start_thread()
 
-    def send(self, msg, header=""):
-        self.out_buffer.append((header, msg))
+    def send(self, msg, is_json=False):
+        if self.open:
+            if is_json:
+                json_str = json.dumps(msg)
+                self.out_buffer.append(json_str)
+            else:
+                self.out_buffer.append(msg)
+        else:
+            return False
 
     def run(self):
         # Fix network select
-        readable, writable, errored = select.select(self.read_list, self.write_list, [])
+        readable, writable, errored = select.select(self.read_list, self.write_list, [], 1)
         for sock in readable:
             # On initial connection
             if sock is self.server_socket:
@@ -42,17 +49,9 @@ class NetworkSocket(ProgramThread):
         for client in writable:
             if len(self.out_buffer) > 0:
                 try:
-                    if len(self.out_buffer[0]) >= 2:
-                        combined_str = ""
-                        for i in xrange(len(self.out_buffer[0][1])):
-                            item = self.out_buffer[0][1][i]
-                            combined_str += "{}".format(item)
-                            if i < len(self.out_buffer[0][1]) - 1:
-                                combined_str += ","
-
-                        if len(combined_str) > 0:
-                            self.client_socket.send("{}{}\n".format(self.out_buffer[0][0], combined_str))
-                        del self.out_buffer[0]
+                    if len(self.out_buffer[0]) > 0:
+                        self.client_socket.send("{}\n".format(self.out_buffer[0]))
+                    del self.out_buffer[0]
                 except socket.error as err:
                     print "Socket error: {}".format(err)
                     self.write_list.remove(client)
