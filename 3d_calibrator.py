@@ -11,10 +11,11 @@ from pyqtgraph.Qt import QtCore, QtGui
 from threading import Thread, ThreadError
 
 import visual
-from camutil import IPCam, CamManager
-from visual_odometry import PinholeCamera
+from camutil import IPCam, ImgCam, CamManager
 import marker_utils
 import config.cmarker
+from network import NetworkSocket
+from threadutil import ProgramThread
 
 
 def draw_points(img, pts, color, radius=3):
@@ -399,10 +400,10 @@ def back_project_point(u, v, mtx, rvec, tvec, z=0):
 
 
 ipcam_url = "http://192.168.8.100:8080/"
-# ipcam_url = "http://192.168.1.115:8080/"
 cam_manager = CamManager([
-    IPCam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
-    # Cam("http://192.168.8.103:8080/", name="Samsung Galaxy")
+    # IPCam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
+    ImgCam("img\\cam_rotated.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamLeft"),
+    ImgCam("img\\cam_right.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRight")
 ])
 cam_manager.start()
 c_marker_finder = CalibrationMarkerFinder()
@@ -433,19 +434,23 @@ for y in xrange(grid_size[0]):
                 grid = np.vstack((grid, coord3D_up))
 
 
-class CVThread():
+class CVThread(ProgramThread):
     def __init__(self):
-        self.thread = Thread(target=self.run)
-        self.thread_cancelled = False
+        ProgramThread.__init__(self, self.run)
         self.scene_data = {}
 
     def start(self):
-        self.thread.start()
+        # self.net_socket.listen()
+        self.start_thread()
 
-    def process(self):
+    def run(self):
         if cam_manager.available_cameras > 0:
             for cam in cam_manager.get_frames():
-                frame = cam.frame
+                # Prepare scene data for this camera
+                if cam.name not in self.scene_data:
+                    self.scene_data[cam.name] = {}
+
+                frame = resize_img(cam.frame, width=960)
                 # cam.imshow("", frame)
 
                 undistorted = cv2.undistort(frame, cam.data.mtx, cam.data.dist)
@@ -459,6 +464,10 @@ class CVThread():
                     imgp = np.float32([])
 
                 ret, x, y = marker_utils.find_marker(undistorted)
+                x = imgp[1][0]
+                y = imgp[1][1]
+                self.scene_data[cam.name]["x"] = x
+                self.scene_data[cam.name]["y"] = y
                 if x is not None and y is not None:
                     cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
                 if len(imgp) == len(objp):
@@ -467,8 +476,14 @@ class CVThread():
                     ret, cam.data.rvec, cam.data.tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2),
                                                                      cam.data.mtx, None)
 
+                    # Send camera coordinates to unity
+                    # Very WIP
+                    # cv_thread.net_socket.send(cam.data.tvec.ravel(), header="t:")
+                    # cv_thread.net_socket.send(cam.data.rvec.ravel(), header="r:")
+
                     objp_screen, jac = cv2.projectPoints(objp, cam.data.rvec, cam.data.tvec, cam.data.mtx,
                                                          distCoeffs=None)
+                    self.scene_data[cam.name]["objp"] = objp
                     error = calc_back_project_error(objp_screen, imgp)
                     # print "PnP Back-projection Error: {}".format(round(error, 3))
 
@@ -480,6 +495,7 @@ class CVThread():
                         ray = np.array([tvec, P])
                         print "Ray: {}".format(ray)
                         print "Ray magnitude: {}mm".format(np.linalg.norm(ray[0] - ray[1]))"""
+                        self.scene_data[cam.name]["ray"] = np.array([cam.data.tvec, P])
 
                         new_points = np.float32([[P[0, 0], P[1, 0], P[2, 0]]])
                         screen_points, jac = cv2.projectPoints(new_points, cam.data.rvec, cam.data.tvec, cam.data.mtx,
@@ -497,19 +513,9 @@ class CVThread():
                 cam.imshow("Visualization", img)
             cv2.waitKey(1)
 
-    def run(self):
-        while not self.thread_cancelled:
-            try:
-                self.process()
-            except ThreadError:
-                self.thread_cancelled = True
-
-    def shut_down(self):
-        self.thread_cancelled = True
-        # block while waiting for thread to terminate
-        while self.thread.isAlive():
-            time.sleep(1)
-        return True
+    def stop(self):
+        # self.net_socket.close()
+        self.stop_thread()
 
 
 cv_thread = CVThread()
@@ -519,40 +525,69 @@ cv_thread.start()
 def main(dt):
     for cam in cam_manager.cameras:
         if cam.data.rvec is not None and cam.data.tvec is not None:
-            camera = my_app.get_gl_item("camera")
+            camera = my_app.get_gl_item("camera_" + cam.name)
+            if not camera:
+                camera = visual.create_camera(np.zeros(3))
+                my_app.add_gl_item("camera_" + cam.name, camera)
             r = cam.data.rvec * (180 / math.pi)
             camera.resetTransform()
-            t = cam.data.tvec / 1000.0
-            t *= 4
-            camera.translate(t[0], -t[1], t[2])
-            camera.rotate(r[0], 1, 0, 0)
-            camera.rotate(-r[1], 0, 1, 0)
-            camera.rotate(r[2], 0, 0, 1)
-            camera.rotate(-90, 1, 0, 0)
-            tr_og = camera.transform()
-            tr = pg.transformToArray(tr_og)
-            true_translate = np.array([tr[0][3], tr[1][3], tr[2][3]])
+            world_scale = 4 / 1000.0
+            t = cam.data.tvec.copy()
+            R, _ = cv2.Rodrigues(cam.data.rvec)
+            R = np.matrix(R)
+            t = R * np.matrix(t)
+            t *= world_scale
 
-            camera_ray = my_app.get_gl_item("camera_ray")
-            pos = np.float32([[0, 0, 0], [true_translate[0], true_translate[1], true_translate[2]]])
-            camera_ray.setData(pos=pos)
+            camera.translate(-t[0], t[1], t[2])
+            # camera.rotate(r[0], 1, 0, 0)
+            # camera.rotate(r[1], 0, 1, 0)
+            # camera.rotate(-r[2], 0, 0, 1)
+            """tr_og = camera.transform()
+            tr = pg.transformToArray(tr_og)
+            true_translate = np.array([tr[0][3], tr[1][3], tr[2][3]])"""
+
+            """camera_ray = my_app.get_gl_item("camera_ray_" + cam.name)
+            if not camera_ray:
+                camera_ray = visual.create_line(np.array([[0, 0, 0], [0, 0, 0]]), color=[1, 1, 0, 1])
+                my_app.add_gl_item("camera_ray_" + cam.name, camera_ray)
+
+            if cam.name in cv_thread.scene_data:
+                s_data = cv_thread.scene_data[cam.name]
+                if "x" in s_data and "y" in s_data and "ray" in s_data and "objp" in s_data:
+                    x = s_data["x"] * world_scale
+                    y = s_data["y"] * world_scale
+                    ray = s_data["ray"] * world_scale
+
+                    grid = s_data["objp"] * world_scale
+
+                    for i in xrange(len(grid)):
+                        pt = grid[i].ravel()
+                        grid_marker = my_app.get_gl_item("grid_marker_{}_".format(i) + cam.name)
+                        if not grid_marker:
+                            ray1 = ray[1].ravel()
+                            if np.linalg.norm(ray1 - pt) < 0.01:
+                                color = [1, 1, 0, 1]
+                            else:
+                                color = [1, 0, 1, 1]
+                            grid_marker = visual.create_point(np.array([-pt[0], pt[1], 0]), color=color)
+                            my_app.add_gl_item("grid_marker_{}_".format(i) + cam.name, grid_marker)
+
+                    pos = np.float32(
+                        [[-ray[0][0], ray[0][1], ray[0][2]], [-ray[1][0], ray[1][1], np.round(ray[1][2], 2).ravel()[0]]])
+                    camera_ray.resetTransform()
+                    camera_ray.setData(pos=pos)"""
 
 
 def on_quit():
     cam_manager.stop()
     cv2.destroyAllWindows()
-    cv_thread.shut_down()
+    cv_thread.stop()
 
 
 app = QtGui.QApplication(sys.argv)
 my_app = visual.App()
 
 my_app.canvas3d.setBackgroundColor([64, 64, 64])
-
-camera = visual.create_camera(np.zeros(3))
-my_app.add_gl_item("camera", camera)
-camera_ray = visual.create_line(np.array([[0, 0, 0], [0, 0, 0]]), color=[1, 1, 0, 1])
-my_app.add_gl_item("camera_ray", camera_ray)
 
 # loop event
 my_app.anim(main)
