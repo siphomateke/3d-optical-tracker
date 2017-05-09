@@ -1,5 +1,6 @@
 import sys
 import time
+import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui
 import pyqtgraph.opengl as gl
 import numpy as np
@@ -27,11 +28,15 @@ class App(QtGui.QMainWindow):
 
         # Draw axes
         axes_scale = 10
-        x_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [1, 0, 0]]) * axes_scale, color=[1, 0, 0, 1], width=1)
+        axes_width = 10
+        x_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [1, 0, 0]]) * axes_scale, color=[1, 0, 0, 1],
+                                   width=axes_width)
         self.canvas3d.addItem(x_axis)
-        y_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 1, 0]]) * axes_scale, color=[0, 1, 0, 1], width=1)
+        y_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 1, 0]]) * axes_scale, color=[0, 1, 0, 1],
+                                   width=axes_width)
         self.canvas3d.addItem(y_axis)
-        z_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 0, 1]]) * axes_scale, color=[0, 0, 1, 1], width=1)
+        z_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 0, 1]]) * axes_scale, color=[0, 0, 1, 1],
+                                   width=axes_width)
         self.canvas3d.addItem(z_axis)
 
         # 2D
@@ -105,16 +110,29 @@ class App(QtGui.QMainWindow):
         self.update_fps()
         QtCore.QTimer.singleShot(1, lambda: self.anim(func))
 
+    """def add_img(self):
+        self.view = self.canvas.addViewBox(0, 0)
+        self.view.setAspectLocked(True)
+        self.img = pg.ImageItem(border='w')
+        self.img.setImage(img)
+        self.view.addItem(self.img)"""
+
     def add_gl_item(self, name, item):
         if name not in self.gl_items:
             self.gl_items[name] = item
             self.canvas3d.addItem(item)
 
     def set_gl_data(self, name, data):
-        self.gl_items[name].setData(data)
+        if name in self.gl_items:
+            self.gl_items[name].setData(data)
+        else:
+            return False
 
     def get_gl_item(self, name):
-        return self.gl_items[name]
+        if name in self.gl_items:
+            return self.gl_items[name]
+        else:
+            return False
 
 
 def create_camera(pos):
@@ -138,14 +156,33 @@ def create_camera(pos):
     return camera
 
 
+def create_axis(pos, axes_scale=10, axes_width=10):
+    x_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [1, 0, 0]]) * axes_scale, color=[1, 0, 0, 1], width=axes_width)
+    y_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 1, 0]]) * axes_scale, color=[0, 1, 0, 1], width=axes_width)
+    z_axis = gl.GLLinePlotItem(pos=np.array([[0, 0, 0], [0, 0, 1]]) * axes_scale, color=[0, 0, 1, 1], width=axes_width)
+    x_axis.translate(pos[0], pos[1], pos[2])
+    y_axis.translate(pos[0], pos[1], pos[2])
+    z_axis.translate(pos[0], pos[1], pos[2])
+    return x_axis, y_axis, z_axis
+
+
+def create_line(pos, color=[1, 1, 1, 1]):
+    line = gl.GLLinePlotItem(pos=pos, color=color, width=2)
+    return line
+
+
+def create_point(pos, color=[1, 1, 1, 1]):
+    md = gl.MeshData.sphere(rows=3, cols=3, radius=0.2)
+    point = gl.GLMeshItem(meshdata=md, shader="shaded", edgeColor=color, drawEdges=True, drawFaces=False)
+    point.translate(pos[0], pos[1], pos[2])
+    return point
+
+
 def main():
     app = QtGui.QApplication(sys.argv)
     my_app = App()
 
     my_app.canvas3d.setBackgroundColor([64, 64, 64])
-
-    camera = create_camera(np.zeros(3))
-    my_app.add_gl_item("camera", camera)
 
     def main_loop(dt):
         pass
