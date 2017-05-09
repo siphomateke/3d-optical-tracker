@@ -1,16 +1,10 @@
-import sys
-import time
 import math
 from types import *
 import cv2
 import numpy as np
 from imutils import resize_img
 from matplotlib import pyplot as plt
-import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtGui
-from threading import Thread, ThreadError
 
-import visual
 from camutil import IPCam, ImgCam, CamManager
 import marker_utils
 import config.cmarker
@@ -399,48 +393,13 @@ def back_project_point(u, v, mtx, rvec, tvec, z=0):
     return r_inv * (s * k_inv * p - tvec)
 
 
-ipcam_url = "http://192.168.8.100:8080/"
-cam_manager = CamManager([
-    # IPCam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
-    ImgCam("img\\cam_rotated.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamLeft"),
-    ImgCam("img\\cam_right.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRight")
-])
-cam_manager.start()
-c_marker_finder = CalibrationMarkerFinder()
-
-# height, width
-# TODO: Make grid shape orientation determinable
-grid_size = (4, 2)
-# all measurements in mm
-grid_spacing = 162
-x_spacing = 212
-y_spacing = 144
-module_y_spacing = 154
-objp = np.zeros((grid_size[1] * grid_size[0], 3), np.float32)
-count = 0
-grid = np.float32([])
-for y in xrange(grid_size[0]):
-    for x in xrange(grid_size[1]):
-        coord = np.array([x * x_spacing, (y * y_spacing) + (int(y / 2) * (module_y_spacing - y_spacing))])
-        objp[count, :2] = coord
-        count += 1
-        if (x == 0 or x == grid_size[1] - 1) and (y == 0 or y == grid_size[0] - 1):
-            coord3D = np.float32([coord[0], coord[1], 0])
-            coord3D_up = np.float32([coord3D[0], coord3D[1], -x_spacing])
-            if len(grid) == 0:
-                grid = np.float32([coord3D, coord3D_up])
-            else:
-                grid = np.vstack((grid, coord3D))
-                grid = np.vstack((grid, coord3D_up))
-
-
 class CVThread(ProgramThread):
     def __init__(self):
         ProgramThread.__init__(self, self.run)
         self.scene_data = {}
+        self.quit = False
 
     def start(self):
-        # self.net_socket.listen()
         self.start_thread()
 
     def run(self):
@@ -476,11 +435,6 @@ class CVThread(ProgramThread):
                     ret, cam.data.rvec, cam.data.tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2),
                                                                      cam.data.mtx, None)
 
-                    # Send camera coordinates to unity
-                    # Very WIP
-                    # cv_thread.net_socket.send(cam.data.tvec.ravel(), header="t:")
-                    # cv_thread.net_socket.send(cam.data.rvec.ravel(), header="r:")
-
                     objp_screen, jac = cv2.projectPoints(objp, cam.data.rvec, cam.data.tvec, cam.data.mtx,
                                                          distCoeffs=None)
                     self.scene_data[cam.name]["objp"] = objp
@@ -511,88 +465,87 @@ class CVThread(ProgramThread):
                     if np.all(abs(grid_points2) < 1e6):
                         draw_grid(img, grid_points2, (0, 255, 0))
                 cam.imshow("Visualization", img)
-            cv2.waitKey(1)
+            key = cv2.waitKey(1)
+            if key & 0xFF == ord("q"):
+                self.quit = True
 
     def stop(self):
-        # self.net_socket.close()
         self.stop_thread()
 
+
+# height, width
+# TODO: Make grid shape orientation determinable
+grid_size = (4, 2)
+# all measurements in mm
+grid_spacing = 162
+x_spacing = 212
+y_spacing = 144
+module_y_spacing = 154
+objp = np.zeros((grid_size[1] * grid_size[0], 3), np.float32)
+count = 0
+grid = np.float32([])
+for y in xrange(grid_size[0]):
+    for x in xrange(grid_size[1]):
+        coord = np.array([x * x_spacing, (y * y_spacing) + (int(y / 2) * (module_y_spacing - y_spacing))])
+        objp[count, :2] = coord
+        count += 1
+        if (x == 0 or x == grid_size[1] - 1) and (y == 0 or y == grid_size[0] - 1):
+            coord3D = np.float32([coord[0], coord[1], 0])
+            coord3D_up = np.float32([coord3D[0], coord3D[1], -x_spacing])
+            if len(grid) == 0:
+                grid = np.float32([coord3D, coord3D_up])
+            else:
+                grid = np.vstack((grid, coord3D))
+                grid = np.vstack((grid, coord3D_up))
+
+ipcam_url = "http://192.168.8.100:8080/"
+cam_manager = CamManager([
+    # IPCam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
+    ImgCam("img\\cam_rotated.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRotated"),
+    ImgCam("img\\cam_right.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRight"),
+    ImgCam("img\\cam_mid.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamMid"),
+    ImgCam("img\\cam_left.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamLeft"),
+    ImgCam("img\\20170507_183317.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamCenter")
+])
+cam_manager.start()
+
+c_marker_finder = CalibrationMarkerFinder()
 
 cv_thread = CVThread()
 cv_thread.start()
 
+net_socket = NetworkSocket()
+net_socket.listen()
 
-def main(dt):
+while True:
+    all_data = {
+        "cameras": []
+    }
     for cam in cam_manager.cameras:
         if cam.data.rvec is not None and cam.data.tvec is not None:
-            camera = my_app.get_gl_item("camera_" + cam.name)
-            if not camera:
-                camera = visual.create_camera(np.zeros(3))
-                my_app.add_gl_item("camera_" + cam.name, camera)
-            r = cam.data.rvec * (180 / math.pi)
-            camera.resetTransform()
-            world_scale = 4 / 1000.0
-            t = cam.data.tvec.copy()
-            R, _ = cv2.Rodrigues(cam.data.rvec)
-            R = np.matrix(R)
-            t = R * np.matrix(t)
-            t *= world_scale
+            rt, _ = cv2.Rodrigues(cam.data.rvec)
+            r = rt.transpose()
+            pos = -np.matrix(r) * np.matrix(cam.data.tvec)
+            pitch = math.atan2(-r[2][1], r[2][2])
+            roll = math.asin(r[2][0])
+            yaw = math.atan2(-r[1][0], r[0][0])
+            euler = np.array([yaw, pitch, roll]) * (180 / math.pi)
+            if net_socket.open:
+                all_data["cameras"].append({
+                    "cam": cam.name,
+                    "pos": np.array(pos).ravel().tolist(),
+                    "euler": euler.ravel().tolist()
+                })
+    net_socket.send(all_data, is_json=True)
+    if cv_thread.quit:
+        break
 
-            camera.translate(-t[0], t[1], t[2])
-            # camera.rotate(r[0], 1, 0, 0)
-            # camera.rotate(r[1], 0, 1, 0)
-            # camera.rotate(-r[2], 0, 0, 1)
-            """tr_og = camera.transform()
-            tr = pg.transformToArray(tr_og)
-            true_translate = np.array([tr[0][3], tr[1][3], tr[2][3]])"""
-
-            """camera_ray = my_app.get_gl_item("camera_ray_" + cam.name)
-            if not camera_ray:
-                camera_ray = visual.create_line(np.array([[0, 0, 0], [0, 0, 0]]), color=[1, 1, 0, 1])
-                my_app.add_gl_item("camera_ray_" + cam.name, camera_ray)
-
-            if cam.name in cv_thread.scene_data:
-                s_data = cv_thread.scene_data[cam.name]
-                if "x" in s_data and "y" in s_data and "ray" in s_data and "objp" in s_data:
-                    x = s_data["x"] * world_scale
-                    y = s_data["y"] * world_scale
-                    ray = s_data["ray"] * world_scale
-
-                    grid = s_data["objp"] * world_scale
-
-                    for i in xrange(len(grid)):
-                        pt = grid[i].ravel()
-                        grid_marker = my_app.get_gl_item("grid_marker_{}_".format(i) + cam.name)
-                        if not grid_marker:
-                            ray1 = ray[1].ravel()
-                            if np.linalg.norm(ray1 - pt) < 0.01:
-                                color = [1, 1, 0, 1]
-                            else:
-                                color = [1, 0, 1, 1]
-                            grid_marker = visual.create_point(np.array([-pt[0], pt[1], 0]), color=color)
-                            my_app.add_gl_item("grid_marker_{}_".format(i) + cam.name, grid_marker)
-
-                    pos = np.float32(
-                        [[-ray[0][0], ray[0][1], ray[0][2]], [-ray[1][0], ray[1][1], np.round(ray[1][2], 2).ravel()[0]]])
-                    camera_ray.resetTransform()
-                    camera_ray.setData(pos=pos)"""
-
-
-def on_quit():
-    cam_manager.stop()
-    cv2.destroyAllWindows()
-    cv_thread.stop()
-
-
-app = QtGui.QApplication(sys.argv)
-my_app = visual.App()
-
-my_app.canvas3d.setBackgroundColor([64, 64, 64])
-
-# loop event
-my_app.anim(main)
-# on quit events
-my_app.cleanup(on_quit)
-
-my_app.show()
-sys.exit(app.exec_())
+print "Terminating program..."
+net_socket.close()
+print "Network socket closed"
+cam_manager.stop()
+print "Camera stream stopped"
+cv_thread.stop()
+print "CV thread killed"
+cv2.destroyAllWindows()
+print "Windows destroyed"
