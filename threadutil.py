@@ -24,6 +24,7 @@ class ProgramThread:
     def stop_thread(self):
         self.thread_cancelled = True
         # block while waiting for thread to terminate
-        while self.is_running():
-            time.sleep(1)
+        """while self.is_running():
+            time.sleep(1)"""
+        self.thread.join()
         return True
