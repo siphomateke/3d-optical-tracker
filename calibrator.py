@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-import camutil
+import camutils
 
 # termination criteria
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
@@ -39,7 +39,7 @@ def run(frame, save_img, calibrate):
 
 
 def main():
-    cam = camutil.Cam("http://192.168.1.115:8080/")
+    cam = camutils.Cam("http://192.168.1.115:8080/")
     cam.start()
 
     save_img = False

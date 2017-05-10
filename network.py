@@ -1,7 +1,7 @@
 import socket
 import select
 import json
-from threadutil import ProgramThread
+from threadutils import ProgramThread
 
 
 class NetworkSocket(ProgramThread):

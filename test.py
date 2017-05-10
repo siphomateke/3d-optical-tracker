@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-import camutil
+import camutils
 from camera_sensors import CameraSensors
 from imutils import rotate_img
 
@@ -16,7 +16,7 @@ vo = VisualOdometry(cam)
 traj = np.zeros((600, 600, 3), dtype=np.uint8)
 
 ipcamera_url = "http://192.168.8.100:8080/"
-cam = camutil.Cam(ipcamera_url)
+cam = camutils.Cam(ipcamera_url)
 cam.start()
 sensor = CameraSensors(ipcamera_url)
 

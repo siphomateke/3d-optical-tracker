@@ -1,6 +1,6 @@
 import cv2
 from camera_sensors import CameraSensors
-from camutil import Cam
+from camutils import Cam
 import numpy as np
 import marker_utils
 

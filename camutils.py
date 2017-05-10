@@ -1,7 +1,7 @@
 from urllib2 import urlopen
 from urllib2 import HTTPError, URLError
 import xml.etree.ElementTree as ET
-from threadutil import ProgramThread
+from threadutils import ProgramThread
 from threading import Thread, ThreadError
 import cv2
 import numpy as np

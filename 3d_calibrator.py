@@ -5,11 +5,11 @@ import numpy as np
 from imutils import resize_img
 from matplotlib import pyplot as plt
 
-from camutil import IPCam, ImgCam, CamManager
-import marker_utils
+from camutils import IPCam, ImgCam, CamManager
+from marker_utils import Marker, MarkerFinder
 import config.cmarker
 from network import NetworkSocket
-from threadutil import ProgramThread
+from threadutils import ProgramThread
 
 
 def draw_points(img, pts, color, radius=3):
@@ -390,7 +390,8 @@ def back_project_point(u, v, mtx, rvec, tvec, z=0):
     temp_mtx = r_inv * k_inv * p
     temp_mtx2 = r_inv * t
     s = (z + temp_mtx2[2, 0]) / temp_mtx[2, 0]
-    return r_inv * (s * k_inv * p - tvec)
+    pt = r_inv * (s * k_inv * p - tvec)
+    return np.array(pt).ravel()
 
 
 class CVThread(ProgramThread):
@@ -408,10 +409,10 @@ class CVThread(ProgramThread):
                 # Prepare scene data for this camera
                 if cam.name not in self.scene_data:
                     self.scene_data[cam.name] = {}
+                if "markers3d" not in self.scene_data[cam.name]:
+                    self.scene_data[cam.name]["markers3d"] = np.array([])
 
                 frame = resize_img(cam.frame, width=960)
-                # cam.imshow("", frame)
-
                 undistorted = cv2.undistort(frame, cam.data.mtx, cam.data.dist)
 
                 img = undistorted.copy()
@@ -422,43 +423,56 @@ class CVThread(ProgramThread):
                 else:
                     imgp = np.float32([])
 
-                ret, x, y = marker_utils.find_marker(undistorted)
-                x = imgp[1][0]
-                y = imgp[1][1]
-                self.scene_data[cam.name]["x"] = x
-                self.scene_data[cam.name]["y"] = y
-                if x is not None and y is not None:
-                    cv2.circle(img, (int(x), int(y)), 5, (0, 255, 0), -1)
+                ret, markers = marker_finder.find_markers(undistorted)
+                if ret:
+                    for marker in markers:
+                        cv2.circle(img, (int(marker.x), int(marker.y)), 5, (0, 255, 0), -1)
+                """markers = [Marker(np.array([imgp[3][0], imgp[3][1]]))]
+                markers.append(Marker(np.array([imgp[5][0], imgp[5][1]])))
+                markers.append(Marker(np.array([imgp[0][0], imgp[0][1]])))"""
                 if len(imgp) == len(objp):
                     # TODO: Add check to see if solvePnP was already evaluated
                     # Find the rotation and translation vectors.
                     ret, cam.data.rvec, cam.data.tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2),
                                                                      cam.data.mtx, None)
 
+                    rt, _ = cv2.Rodrigues(cam.data.rvec)
+                    r = rt.transpose()
+                    pos = -np.matrix(r) * np.matrix(cam.data.tvec)
+                    pitch = math.atan2(-r[2][1], r[2][2])
+                    roll = math.asin(r[2][0])
+                    yaw = math.atan2(-r[1][0], r[0][0])
+                    euler = np.array([yaw, pitch, roll]) * (180 / math.pi)
+                    self.scene_data[cam.name]["pos"] = pos
+                    self.scene_data[cam.name]["euler"] = euler
+
                     objp_screen, jac = cv2.projectPoints(objp, cam.data.rvec, cam.data.tvec, cam.data.mtx,
                                                          distCoeffs=None)
-                    self.scene_data[cam.name]["objp"] = objp
                     error = calc_back_project_error(objp_screen, imgp)
                     # print "PnP Back-projection Error: {}".format(round(error, 3))
 
-                    if x is not None and y is not None:
-                        P = back_project_point(x, y, cam.data.mtx, cam.data.rvec, cam.data.tvec)
+                    temp_markers3d = np.array([])
+                    for marker in markers:
+                        P = back_project_point(marker.x, marker.y, cam.data.mtx, cam.data.rvec, cam.data.tvec)
                         # print "x: {}mm, y: {}mm".format(round(P[0, 0], 3), round(P[1, 0], 3))
 
-                        """print "Camera location: {}".format(tvec)
-                        ray = np.array([tvec, P])
-                        print "Ray: {}".format(ray)
-                        print "Ray magnitude: {}mm".format(np.linalg.norm(ray[0] - ray[1]))"""
-                        self.scene_data[cam.name]["ray"] = np.array([cam.data.tvec, P])
+                        # changing values in another thread must be done immediately
+                        # hence we store it in a temporary array before transferring to the public one
+                        if temp_markers3d.shape[0] > 0:
+                            temp_markers3d = np.vstack((temp_markers3d, P))
+                        else:
+                            temp_markers3d = np.array([P])
 
-                        new_points = np.float32([[P[0, 0], P[1, 0], P[2, 0]]])
+                        new_points = np.float32([[P[0], P[1], P[2]]])
                         screen_points, jac = cv2.projectPoints(new_points, cam.data.rvec, cam.data.tvec, cam.data.mtx,
                                                                distCoeffs=None)
                         backprojection_error = np.linalg.norm(
-                            np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array([x, y]))
+                            np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array(
+                                [marker.x, marker.y]))
                         # print "Backprojection Error: {}".format(round(backprojection_error, 3))
                         center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
                         cv2.circle(img, center, 5, (255, 0, 0), -1)
+                    self.scene_data[cam.name]["markers3d"] = temp_markers3d
 
                     grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx,
                                                           distCoeffs=None)
@@ -505,11 +519,12 @@ cam_manager = CamManager([
     ImgCam("img\\cam_right.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRight"),
     ImgCam("img\\cam_mid.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamMid"),
     ImgCam("img\\cam_left.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamLeft"),
-    ImgCam("img\\20170507_183317.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamCenter")
+    ImgCam("img\\cam_center.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamCenter")
 ])
 cam_manager.start()
 
 c_marker_finder = CalibrationMarkerFinder()
+marker_finder = MarkerFinder()
 
 cv_thread = CVThread()
 cv_thread.start()
@@ -518,25 +533,33 @@ net_socket = NetworkSocket()
 net_socket.listen()
 
 while True:
-    all_data = {
-        "cameras": []
-    }
-    for cam in cam_manager.cameras:
-        if cam.data.rvec is not None and cam.data.tvec is not None:
-            rt, _ = cv2.Rodrigues(cam.data.rvec)
-            r = rt.transpose()
-            pos = -np.matrix(r) * np.matrix(cam.data.tvec)
-            pitch = math.atan2(-r[2][1], r[2][2])
-            roll = math.asin(r[2][0])
-            yaw = math.atan2(-r[1][0], r[0][0])
-            euler = np.array([yaw, pitch, roll]) * (180 / math.pi)
-            if net_socket.open:
-                all_data["cameras"].append({
-                    "cam": cam.name,
-                    "pos": np.array(pos).ravel().tolist(),
-                    "euler": euler.ravel().tolist()
-                })
-    net_socket.send(all_data, is_json=True)
+    if net_socket.open:
+        all_data = {
+            "cameras": [],
+            "objp": []
+        }
+        world_scale = 4 / 1000.0
+        for cam in cam_manager.cameras:
+            if cam.name in cv_thread.scene_data:
+                scene_data = cv_thread.scene_data[cam.name]
+                if cam.data.rvec is not None and cam.data.tvec is not None:
+                    if "pos" in scene_data:
+                        pos = scene_data["pos"]
+                        euler = scene_data["euler"]
+                        pos_world = pos * world_scale
+                        markers3d = scene_data["markers3d"].reshape(-1, 3)
+                        markers3d_world = markers3d * world_scale
+
+                        all_data["cameras"].append({
+                            "name": cam.name,
+                            "pos": np.array(pos_world).ravel().tolist(),
+                            "euler": euler.ravel().tolist(),
+                            "markers3d": markers3d_world.tolist()
+                        })
+        for pt in objp:
+            pt_world = pt * world_scale
+            all_data["objp"].append(pt_world.ravel().tolist())
+        net_socket.send(all_data, is_json=True)
     if cv_thread.quit:
         break
 
