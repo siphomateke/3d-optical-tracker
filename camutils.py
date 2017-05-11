@@ -12,7 +12,7 @@ import sfmutils
 
 class CamData:
     def __init__(self):
-        self.camera_settings = None
+        self.rms = -1  # Root Mean Square (RMS) represents re-projection error
         self.mtx = None
         self.dist = None
 
@@ -24,16 +24,34 @@ class CamData:
 
         self._cache = {}
 
-    def load_from_file(self, filename):
-        self.camera_settings = np.load(filename)
-        if "mtx" not in self.camera_settings:
+    @staticmethod
+    def create_from_data(rms, mtx, dist):
+        cam_data = CamData()
+        cam_data.rms = rms
+        cam_data.mtx = mtx
+        cam_data.dist = dist
+        return cam_data
+
+    @staticmethod
+    def create_from_file(filename):
+        cam_data = CamData()
+        camera_settings = np.load(filename)
+        if "mtx" not in camera_settings:
             err = "camera intrinsic matrix not found in camera settings file"
             raise ValueError(err)
-        if "dist" not in self.camera_settings:
+        if "dist" not in camera_settings:
             err = "CamDat load error: distortion matrix not found in camera settings file"
             raise ValueError(err)
-        self.mtx = self.camera_settings["mtx"]
-        self.dist = self.camera_settings["dist"]
+        # Load all parameters from file
+        for attr in camera_settings:
+            val = camera_settings[attr]
+            setattr(cam_data, attr, val)
+        return cam_data
+
+    def save(self, path):
+        # TODO: Add assertions for saving camera data
+        np.savez(path, rms=self.rms, mtx=self.mtx, dist=self.dist, rvec=self.rvec, tvec=self.tvec)
+        return True
 
     def _cache_get(self, name, func):
         """
@@ -67,7 +85,7 @@ class CamData:
         return self._cache_get("r", lambda: cv2.Rodrigues(self.rvec)[0])
 
     def rotation_matrix_transpose(self):
-        return self._cache_get("r_T", lambda: self.rotation_matrix.transpose())
+        return self._cache_get("r_T", lambda: self.rotation_matrix.T)
 
     @property
     def rotation_matrix_inv(self):
@@ -83,11 +101,12 @@ class CamData:
         return self._cache_get("proj_mtx", lambda: np.dot(self.mtx, self.Rt))
 
     def solve_pnp(self, object_points, image_points):
-        ret, self.rvec, self.tvec = cv2.solvePnP(object_points.reshape(-1, 3), image_points.reshape(-1, 1, 2), self.mtx,
-                                                 None)
+        ret, self.rvec, self.tvec, inlears = cv2.solvePnPRansac(object_points.reshape(-1, 3),
+                                                                image_points.reshape(-1, 1, 2), self.mtx,
+                                                                None)
         object_points_screen, jac = cv2.projectPoints(object_points, self.rvec, self.tvec, self.mtx,
                                                       distCoeffs=None)
-        error = sfmutils.calc_projection_error(object_points_screen, image_points)
+        error = sfmutils.calc_reprojection_error(object_points_screen, image_points)
 
         r = self.rotation_matrix_transpose()
         self.pos = -np.matrix(r) * np.matrix(self.tvec)
@@ -103,7 +122,6 @@ class CamData:
 class CamBase:
     def __init__(self, data_filename="", name="Cam1"):
         self.name = name
-        self.capture = cv2.VideoCapture()
         self.ready = False
         self.frame = None
         self.frame_ready = False
@@ -115,8 +133,7 @@ class CamBase:
         self.data_filename = data_filename
         if len(self.data_filename) > 0:
             try:
-                self.data = CamData()
-                self.data.load_from_file(data_filename)
+                self.data = CamData.create_from_file(data_filename)
                 self.data_loaded = True
             except IOError as err:
                 print "Error loading camera data for {}: {} \n " \
@@ -130,7 +147,7 @@ class CamBase:
         if self.data_loaded:
             print "{} initialised.".format(self.name)
         else:
-            print "Failed to initialise {}.".format(self.name)
+            print "Failed to initialise {} data.".format(self.name)
 
     def start(self):
         """
@@ -180,6 +197,7 @@ class IPCam(CamBase, ProgramThread):
     def __init__(self, url, data_filename="", name="IPCam1"):
         CamBase.__init__(self, data_filename=data_filename, name=name)
         ProgramThread.__init__(self, self.run)
+        self.capture = cv2.VideoCapture()
         self.url = url
         self.url_video = self.url + "video"
 
@@ -208,6 +226,8 @@ class IPCam(CamBase, ProgramThread):
 
     def stop(self):
         self.stop_thread()
+        self.capture.release()
+        return True
 
     def check_lighting(self):
         hsv = cv2.cvtColor(self.frame, cv2.COLOR_BGR2HSV)
