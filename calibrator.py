@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import camutils
+from camutils import CamData
 
 # termination criteria
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
@@ -16,7 +17,7 @@ objp *= chessboard_square_size
 objpoints = []  # 3d point in real world space
 imgpoints = []  # 2d points in image plane.
 
-camera_name = "LG-K8_scaled2"
+camera_name = "LG-K8"
 
 
 def run(frame, save_img, calibrate):
@@ -31,39 +32,48 @@ def run(frame, save_img, calibrate):
             imgpoints.append(corners_refined)
             print "Saved image points ({} total)".format(len(imgpoints))
         cv2.drawChessboardCorners(output, chessboard_size, corners_refined, ret)
+
     if calibrate:
-        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
-        np.savez("camera/" + camera_name, ret=ret, mtx=mtx, dist=dist, rvecs=rvecs, tvecs=tvecs)
-        print "Successfully saved {} camera parameters".format(camera_name)
+        print "Calibrating camera..."
+        ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None,
+                                                           flags=cv2.CALIB_FIX_ASPECT_RATIO)
+        print "RMS : {}".format(ret)
+        cam_data = CamData.create_from_data(ret, mtx, dist)
+        cam_data.save("camera/" + camera_name)
+        return True
     cv2.imshow("Output", output)
+    return False
 
 
 def main():
-    cam = camutils.Cam("http://192.168.1.115:8080/")
+    cam = camutils.IPCam("http://192.168.8.100:8080/")
     cam.start()
 
-    save_img = False
-    calibrate = False
+    if cam.ready:
 
-    cv2.namedWindow("cam")
-    while True:
-        if cam.is_opened():
-            frame = cam.get_frame()
-            run(frame, save_img, calibrate)
-            cv2.imshow("cam", frame)
+        save_img = False
+        calibrate = False
 
-        key = cv2.waitKey(1)
-        if key & 0xFF == ord('q'):
-            break
-        elif key & 0xFF == ord('s'):
-            save_img = True
-        elif key & 0xFF == ord('c'):
-            calibrate = True
-        else:
-            calibrate = False
-            save_img = False
-    cam.shut_down()
-    cv2.destroyAllWindows()
+        cv2.namedWindow("cam")
+        quit_program = False
+        while True:
+            if cam.frame_ready:
+                frame = cam.frame
+                quit_program = run(frame, save_img, calibrate)
+                cv2.imshow("cam", frame)
+
+            key = cv2.waitKey(1)
+            if key & 0xFF == ord('q') or quit_program:
+                break
+            elif key & 0xFF == ord('s'):
+                save_img = True
+            elif key & 0xFF == ord('c'):
+                calibrate = True
+            else:
+                calibrate = False
+                save_img = False
+        cam.stop()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
