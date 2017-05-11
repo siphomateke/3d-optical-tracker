@@ -58,7 +58,7 @@ def find_point_zplane(u, v, cam_data, z=0):
     return np.array(pt).ravel()
 
 
-def calc_projection_error(projected, original):
+def calc_reprojection_error(projected, original):
     """
     Calculates the projection error of a set of points and their corresponding projected points
     :param projected: The projected points
