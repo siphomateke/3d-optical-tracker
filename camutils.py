@@ -2,9 +2,12 @@ import logging
 from urllib2 import urlopen
 from urllib2 import HTTPError, URLError
 import xml.etree.ElementTree as ET
-from threadutils import ProgramThread
 import cv2
 import numpy as np
+import math
+
+from threadutils import ProgramThread
+import sfmutils
 
 
 class CamData:
@@ -15,6 +18,9 @@ class CamData:
 
         self.rvec = None
         self.tvec = None
+
+        self.pos = None
+        self.euler = None
 
         self._cache = {}
 
@@ -60,6 +66,9 @@ class CamData:
     def rotation_matrix(self):
         return self._cache_get("r", lambda: cv2.Rodrigues(self.rvec)[0])
 
+    def rotation_matrix_transpose(self):
+        return self._cache_get("r_T", lambda: self.rotation_matrix.transpose())
+
     @property
     def rotation_matrix_inv(self):
         return self._cache_get("r_inv", lambda: np.matrix(np.linalg.inv(self.rotation_matrix)))
@@ -67,11 +76,28 @@ class CamData:
     @property
     def Rt(self):
         assert self.tvec.shape == (1, 3) or self.tvec.shape == (3, 1), "translation vectors must be a 1x3 or 3x1 matrix"
-        return self._cache_get("Rt", lambda: np.hstack((self.rotation_matrix, self.tvec.reshape(1, 3))))
+        return self._cache_get("Rt", lambda: np.hstack((self.rotation_matrix, self.tvec.reshape(3, 1))))
 
     @property
     def proj_mtx(self):
         return self._cache_get("proj_mtx", lambda: np.dot(self.mtx, self.Rt))
+
+    def solve_pnp(self, object_points, image_points):
+        ret, self.rvec, self.tvec = cv2.solvePnP(object_points.reshape(-1, 3), image_points.reshape(-1, 1, 2), self.mtx,
+                                                 None)
+        object_points_screen, jac = cv2.projectPoints(object_points, self.rvec, self.tvec, self.mtx,
+                                                      distCoeffs=None)
+        error = sfmutils.calc_projection_error(object_points_screen, image_points)
+
+        r = self.rotation_matrix_transpose()
+        self.pos = -np.matrix(r) * np.matrix(self.tvec)
+
+        yaw = math.atan2(-r[1][0], r[0][0])
+        pitch = math.atan2(-r[2][1], r[2][2])
+        roll = math.asin(r[2][0])
+        self.euler = np.array([yaw, pitch, roll]) * (180 / math.pi)
+
+        return error
 
 
 class CamBase:
