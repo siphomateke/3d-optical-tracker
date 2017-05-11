@@ -1,48 +1,116 @@
+import logging
 from urllib2 import urlopen
 from urllib2 import HTTPError, URLError
 import xml.etree.ElementTree as ET
 from threadutils import ProgramThread
-from threading import Thread, ThreadError
 import cv2
 import numpy as np
 
 
 class CamData:
-    def __init__(self, filename):
-        self.camera_settings = np.load(filename)
-        self.mtx = self.camera_settings["mtx"]
-        self.fx = self.mtx[0][0]
-        self.fy = self.mtx[1][1]
-        self.cx = self.mtx[0][2]
-        self.cy = self.mtx[1][2]
-        self.dist = self.camera_settings["dist"]
+    def __init__(self):
+        self.camera_settings = None
+        self.mtx = None
+        self.dist = None
 
         self.rvec = None
         self.tvec = None
+
+        self._cache = {}
+
+    def load_from_file(self, filename):
+        self.camera_settings = np.load(filename)
+        if "mtx" not in self.camera_settings:
+            err = "camera intrinsic matrix not found in camera settings file"
+            raise ValueError(err)
+        if "dist" not in self.camera_settings:
+            err = "CamDat load error: distortion matrix not found in camera settings file"
+            raise ValueError(err)
+        self.mtx = self.camera_settings["mtx"]
+        self.dist = self.camera_settings["dist"]
+
+    def _cache_get(self, name, func):
+        """
+        Gets a value from the cache if it exists. Otherwise set it to func
+        :param name:
+        :param func:
+        :return:
+        """
+        if name not in self._cache:
+            self._cache[name] = func()
+        return self._cache[name]
+
+    @property
+    def fx(self):
+        return self.mtx[0][0]
+
+    @property
+    def fy(self):
+        return self.mtx[1][1]
+
+    @property
+    def cx(self):
+        return self.mtx[0][2]
+
+    @property
+    def cy(self):
+        return self.mtx[1][2]
+
+    @property
+    def rotation_matrix(self):
+        return self._cache_get("r", lambda: cv2.Rodrigues(self.rvec)[0])
+
+    @property
+    def rotation_matrix_inv(self):
+        return self._cache_get("r_inv", lambda: np.matrix(np.linalg.inv(self.rotation_matrix)))
+
+    @property
+    def Rt(self):
+        assert self.tvec.shape == (1, 3) or self.tvec.shape == (3, 1), "translation vectors must be a 1x3 or 3x1 matrix"
+        return self._cache_get("Rt", lambda: np.hstack((self.rotation_matrix, self.tvec.reshape(1, 3))))
+
+    @property
+    def proj_mtx(self):
+        return self._cache_get("proj_mtx", lambda: np.dot(self.mtx, self.Rt))
 
 
 class CamBase:
     def __init__(self, data_filename="", name="Cam1"):
         self.name = name
         self.capture = cv2.VideoCapture()
-        self.frame = None
         self.ready = False
+        self.frame = None
+        self.frame_ready = False
+        self.data_loaded = False
 
-        # TODO: Add assertions for loading camera data
+        # TODO: Improve exception handling and logging
 
+        self.data = None
         self.data_filename = data_filename
         if len(self.data_filename) > 0:
-            self.data = CamData(data_filename)
-        else:
-            self.data = None
+            try:
+                self.data = CamData()
+                self.data.load_from_file(data_filename)
+                self.data_loaded = True
+            except IOError as err:
+                print "Error loading camera data for {}: {} \n " \
+                      "Make sure the path is correct and that the file exists.".format(self.name, err)
+            except ValueError as err:
+                print "Error loading camera data for {}: {}".format(self.name, err)
 
-        print "{} initialised.".format(self.name)
+        else:
+            self.data_loaded = False
+
+        if self.data_loaded:
+            print "{} initialised.".format(self.name)
+        else:
+            print "Failed to initialise {}.".format(self.name)
 
     def start(self):
         """
         Initialize camera settings or connections
         """
-        return True
+        return self.ready
 
     def stop(self):
         """
@@ -60,9 +128,26 @@ class CamBase:
 class ImgCam(CamBase):
     def __init__(self, filename, data_filename="", name="ImgCam1"):
         CamBase.__init__(self, data_filename=data_filename, name=name)
+        self.img_filename = filename
+
+    def start(self):
+        """
+        Loads the image
+        :return: Whether the image is ready for reading frames
+        """
         # TODO: Add file checks for reading image file
-        self.frame = cv2.imread(filename)
-        self.ready = True
+        self.frame = cv2.imread(self.img_filename)
+        self.ready = False
+        if not self.data_loaded:
+            logging.error("ImgCam {} could not be initialised".format(self.name))
+        else:
+            if self.frame is not None:
+                self.ready = True
+                self.frame_ready = True
+            else:
+                logging.error("Error loading image for camera {}. " \
+                              "Make sure the path is correct and that the file exists.".format(self.name))
+        return self.ready
 
 
 class IPCam(CamBase, ProgramThread):
@@ -82,16 +167,17 @@ class IPCam(CamBase, ProgramThread):
             self.request_action("disabletorch")
             self.start_thread()
             print "Camera stream started."
-            return True
+            self.ready = True
         else:
             print "Error opening camera."
-            return False
+            self.ready = False
+        return self.ready
 
     def run(self):
         ret, img = self.capture.read()
         if ret:
             self.frame = img.copy()
-            self.ready = True
+            self.frame_ready = True
             # self.check_lighting()
 
     def stop(self):
@@ -141,6 +227,7 @@ class CamManager:
     """
     Controls and stores a group of cameras and their settings
     """
+
     def __init__(self, cameras):
         self.cameras = cameras  # type: list[CamBase]
         self._available_cameras = 0
@@ -158,7 +245,7 @@ class CamManager:
 
     def get_frames(self):
         for cam in self.cameras:
-            if cam.ready:
+            if cam.ready and cam.frame_ready:
                 yield cam
 
     def stop(self):
