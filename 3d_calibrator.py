@@ -3,13 +3,13 @@ from types import *
 import cv2
 import numpy as np
 from imutils import resize_img
-from matplotlib import pyplot as plt
 
-from camutils import IPCam, ImgCam, CamManager, CamBase
-from marker_utils import Marker, MarkerFinder
-import config.cmarker
-from network import NetworkSocket
 from threadutils import ProgramThread
+from network import NetworkSocket
+from camutils import ImgCam, CamManager
+from marker_utils import MarkerFinder
+import config.cmarker
+import sfmutils
 
 
 def draw_points(img, pts, color, radius=3):
@@ -332,116 +332,6 @@ class CalibrationMarkerFinder:
         return found, self.markers
 
 
-def calc_back_project_error(projected, original):
-    """
-    Calculates the back-projection error of a set of points and their corresponding projected points
-    :param projected: The back-projected points
-    :param original: The original image points
-    :return: Back-projection erorr
-    :rtype: float
-    """
-    # TODO: Add assertions to calc_back_project_error
-    diffs = projected.reshape(-1, 2) - original.reshape(-1, 2)
-    error = 0
-    for i in xrange(len(diffs)):
-        diff = diffs[i]
-        error += np.linalg.norm(diff)
-    error /= len(diffs)
-    return error
-
-
-def back_project_point(u, v, cam, z=0):
-    """
-    Converts a 2D point to a 3D point using a known z value
-
-    Cam must contain data which in turn contains:
-    -mtx: The camera matrix of intrinsic parameters
-    -rotation_matrix_inv: The inverse of the extrinsic rotation vectors in the form 3x3
-    -tvec: The extrinsic translation vectors in the form 1x3
-
-    :param u: The x coordinate of the 2D point
-    :param v: The y coordinate of the 2D point
-    :param cam: The camera which holds data such as mtx, rotation_matrix_inv and tvec
-    :param z: The z coordinate of the point in 3D. This is 0 by default
-    :type cam: CamBase
-    :type z: int
-    """
-
-    # TODO: change back-projection function to use camera and cached matrices
-
-    """
-    Theory:
-    a 2D point p (u, v, 1).T can be represented as a 3D point P (X, Y, Z).T as follows:
-    p = K(R * P + t) / s
-    where K is camera matrix, R is rotation matrix, t is translation matrix and s is a constant
-    If Z is constant, we can find s:
-    s = ( P + (R^-1)t ) / ( (R^-1)(K^-1)p )
-    thus,
-    s = ( Z + ((R^-1)t)[2, 0] ) / ( (R^-1)(K^-1)p[2,0] )
-    we can then find P using s;
-    P = (R^-1) * (s * (K^-1) * p - t)
-    """
-
-    assert cam.data.mtx.shape == (3, 3), "camera intrinsic parameters must be a 3x3 matrix: %r" % cam.data.mtx.shape
-    assert cam.data.rotation_matrix_inv.shape == (3, 3), \
-        "camera inverse rotation matrix must be a 3x3 matrix: %r" % cam.data.rotation_matrix_inv.shape
-    assert cam.data.tvec.shape == (1, 3), "camera translation vectors must be a 1x2 matrix: %r" % cam.data.tvec.shape
-
-    # Convert matrices to useful formats. Uses notation common for 3d reconstruction such as K, R and t
-    k = cam.data.mtx
-    p = np.matrix(np.array([u, v, 1]).reshape(3, 1))
-    k_inv = np.matrix(np.linalg.inv(k))
-    r_inv = cam.data.rotation_matrix_inv
-    t = np.matrix(cam.data.tvec)
-
-    temp_mtx = r_inv * k_inv * p
-    temp_mtx2 = r_inv * t
-    s = (z + temp_mtx2[2, 0]) / temp_mtx[2, 0]
-    pt = r_inv * (s * k_inv * p - t)
-    return np.array(pt).ravel()
-
-
-def triangulate(all_markers, cameras):
-    """
-    Triangulates points using Linear-Eigen Singular Value Decomposition (SVD).
-    See Page 7-8 of 'Triangulation ~ Richard I. Hartley and Peter Sturm' for more
-    :param all_markers:
-    :param cameras:
-    :return:
-    """
-    # TODO: Add check to make sure all markers are the same length
-    # Triangulate each marker
-    if len(all_markers) > 0:
-        zipped = zip(all_markers, cameras)
-        A = {}
-        for markers, cam in zipped:
-            proj_mtx = cam.data.proj_mtx  # proj_mtx is 3 rows x 4 columns
-            # Let proj_mtx = P, then pi is the i-th row of proj_mtx
-            p1 = proj_mtx[0, :]
-            p2 = proj_mtx[1, :]
-            p3 = proj_mtx[2, :]
-
-            for i in xrange(len(markers)):
-                if i not in A:
-                    A[i] = []
-                u, v = markers[i].pos
-                A[i].append(u * p3 - p1)
-                A[i].append(v * p3 - p2)
-                A[i].append(u * p2 - v * p1)
-
-        points3d = []
-        for key, a in A.iteritems():
-            # Calculate best point
-            a = np.array(a)
-            u, d, vt = np.linalg.svd(a)
-            X = vt[-1, :3] / vt[-1, 3]  # normalize
-            points3d.append(X)
-
-        return np.array(points3d)
-    else:
-        return False
-
-
 class CVThread(ProgramThread):
     def __init__(self):
         ProgramThread.__init__(self, self.run)
@@ -464,77 +354,69 @@ class CVThread(ProgramThread):
                 undistorted = cv2.undistort(frame, cam.data.mtx, cam.data.dist)
                 img = undistorted.copy()
 
-                # Look for markers in distorted image
-                found_markers, c_markers = c_marker_finder.find(undistorted)
-                if found_markers:
+                # region Look for calibration markers in undistorted image
+                found_cmarkers, c_markers = c_marker_finder.find(undistorted)
+                if found_cmarkers:
                     imgp = np.float32([marker.center for marker in c_markers])
                 else:
                     imgp = np.float32([])
+                # endregion
 
-                ret, markers = marker_finder.find_markers(undistorted)
-                if ret:
+                # region Look for markers in undistorted image
+                found_markers, markers = marker_finder.find_markers(undistorted)
+                if found_markers:
                     for marker in markers:
                         cv2.circle(img, (int(marker.x), int(marker.y)), 5, (0, 255, 0), -1)
-                """markers = [Marker(np.array([imgp[0][0], imgp[0][1]]))]
-                markers.append(Marker(np.array([imgp[5][0], imgp[5][1]])))
-                markers.append(Marker(np.array([imgp[3][0], imgp[3][1]])))"""
                 self.scene_data[cam.name]["markers"] = markers
+                # endregion
+
                 if len(imgp) == len(objp):
                     # TODO: Add check to see if solvePnP was already evaluated
                     # Find the rotation and translation vectors.
-                    ret, cam.data.rvec, cam.data.tvec = cv2.solvePnP(objp.reshape(-1, 3), imgp.reshape(-1, 1, 2),
-                                                                     cam.data.mtx, None)
+                    pnp_error = cam.data.solve_pnp(objp, imgp)
+                    # TODO: Add checks to see if pnp was solved successfully
 
-                    rt, _ = cv2.Rodrigues(cam.data.rvec)
-                    r = rt.transpose()
-                    pos = -np.matrix(r) * np.matrix(cam.data.tvec)
-                    pitch = math.atan2(-r[2][1], r[2][2])
-                    roll = math.asin(r[2][0])
-                    yaw = math.atan2(-r[1][0], r[0][0])
-                    euler = np.array([yaw, pitch, roll]) * (180 / math.pi)
-                    self.scene_data[cam.name]["pos"] = pos
-                    self.scene_data[cam.name]["euler"] = euler
+                    self.scene_data[cam.name]["pos"] = cam.data.pos
+                    self.scene_data[cam.name]["euler"] = cam.data.euler
 
-                    expected_coord = np.dot(cam.data.proj_mtx, np.array([objp[0][0], objp[0][1], objp[0][2], 1]))
+                    # region Find marker intersection with z=0 plane
+                    # Where the ray passing through the markers intersects with the z=0 plane
+                    temp_markers_zplane = np.array([])
 
-                    objp_screen, jac = cv2.projectPoints(objp, cam.data.rvec, cam.data.tvec, cam.data.mtx,
-                                                         distCoeffs=None)
-                    error = calc_back_project_error(objp_screen, imgp)
-                    # print "PnP Back-projection Error: {}".format(round(error, 3))
-
-                    temp_markers3d = np.array([])
                     for marker in markers:
-                        P = back_project_point(marker.x, marker.y, cam.data.mtx, cam.data.rvec, cam.data.tvec)
+                        P = sfmutils.find_point_zplane(marker.x, marker.y, cam.data)
 
                         # changing values in another thread must be done immediately
                         # hence we store it in a temporary array before transferring to the public one
-                        if temp_markers3d.shape[0] > 0:
-                            temp_markers3d = np.vstack((temp_markers3d, P))
+                        if temp_markers_zplane.shape[0] > 0:
+                            temp_markers_zplane = np.vstack((temp_markers_zplane, P))
                         else:
-                            temp_markers3d = np.array([P])
+                            temp_markers_zplane = np.array([P])
 
                         new_points = np.float32([[P[0], P[1], P[2]]])
                         screen_points, jac = cv2.projectPoints(new_points, cam.data.rvec, cam.data.tvec, cam.data.mtx,
-                                                               distCoeffs=None)
+                                                               None)
                         backprojection_error = np.linalg.norm(
                             np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array(
                                 [marker.x, marker.y]))
                         # print "Backprojection Error: {}".format(round(backprojection_error, 3))
                         center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
                         cv2.circle(img, center, 5, (255, 0, 0), -1)
-                    self.scene_data[cam.name]["markers3d"] = temp_markers3d
+
+                    self.scene_data[cam.name]["markers_zplane"] = temp_markers_zplane
+                    # endregion
 
                     grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx,
                                                           distCoeffs=None)
                     if np.all(abs(grid_points2) < 1e6):
                         draw_grid(img, grid_points2, (0, 255, 0))
                 cam.imshow("Visualization", img)
-            points3d = triangulate([self.scene_data[cam.name]["markers"] for cam in cam_manager.cameras],
-                                   cam_manager.cameras)
 
+            markers3d = sfmutils.triangulate([self.scene_data[cam.name]["markers"] for cam in cam_manager.cameras],
+                                             cam_manager.cameras)
             if "world" not in self.scene_data:
                 self.scene_data["world"] = {}
-            self.scene_data["world"]["triangulation"] = points3d
+            self.scene_data["world"]["markers3d"] = markers3d
 
             key = cv2.waitKey(1)
             if key & 0xFF == ord("q"):
@@ -600,25 +482,24 @@ while True:
         for cam in cam_manager.cameras:
             if cam.name in cv_thread.scene_data:
                 scene_data = cv_thread.scene_data[cam.name]
-                if cam.data.rvec is not None and cam.data.tvec is not None:
-                    if "pos" in scene_data:
-                        pos = scene_data["pos"]
-                        euler = scene_data["euler"]
-                        pos_world = pos * world_scale
-                        markers3d = scene_data["markers3d"].reshape(-1, 3)
-                        markers3d_world = markers3d * world_scale
+                if cam.data.rvec is not None and cam.data.tvec is not None and "pos" in scene_data:
+                    pos = scene_data["pos"]
+                    euler = scene_data["euler"]
+                    pos_world = pos * world_scale
+                    markers_zplane = scene_data["markers_zplane"].reshape(-1, 3)
+                    markers_zplane_world = markers_zplane * world_scale
 
-                        all_data["cameras"].append({
-                            "name": cam.name,
-                            "pos": np.array(pos_world).ravel().tolist(),
-                            "euler": euler.ravel().tolist(),
-                            "markers3d": markers3d_world.tolist()
-                        })
+                    all_data["cameras"].append({
+                        "name": cam.name,
+                        "pos": np.array(pos_world).ravel().tolist(),
+                        "euler": euler.ravel().tolist(),
+                        "markers_zplane": markers_zplane_world.tolist()
+                    })
         for pt in objp:
             pt_world = pt * world_scale
             all_data["objp"].append(pt_world.ravel().tolist())
-        temp_tri = cv_thread.scene_data["world"]["triangulation"] * world_scale
-        all_data["tri"] = temp_tri.tolist()
+        temp_markers3d = cv_thread.scene_data["world"]["markers3d"] * world_scale
+        all_data["markers3d"] = temp_markers3d.tolist()
         net_socket.send(all_data, is_json=True)
     if cv_thread.quit:
         break
