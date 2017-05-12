@@ -2,20 +2,13 @@ import math
 from types import *
 import cv2
 import numpy as np
-from imutils import resize_img
+import logging
 
 from threadutils import ProgramThread
 from network import NetworkSocket
-from camutils import ImgCam, CamManager
+from camutils import ImgCam, IPCam, CamManager
 from marker_utils import MarkerFinder
 import config.cmarker
-import sfmutils
-
-
-def draw_points(img, pts, color, radius=3):
-    for pt in pts:
-        ravelled = pt.ravel()
-        cv2.circle(img, (int(ravelled[0]), int(ravelled[1])), radius, color, -1)
 
 
 def pt_arr_to_tuple(pt_arr):
@@ -335,7 +328,7 @@ class CalibrationMarkerFinder:
 class CVThread(ProgramThread):
     def __init__(self):
         ProgramThread.__init__(self, self.run)
-        self.scene_data = {}
+        self.solved_pnp = False
         self.quit = False
 
     def start(self):
@@ -343,91 +336,55 @@ class CVThread(ProgramThread):
 
     def run(self):
         if cam_manager.available_cameras > 0:
+            solving_pnp = False
             for cam in cam_manager.get_frames():
-                # Prepare scene data for this camera
-                if cam.name not in self.scene_data:
-                    self.scene_data[cam.name] = {}
-                if "markers3d" not in self.scene_data[cam.name]:
-                    self.scene_data[cam.name]["markers3d"] = np.array([])
+                if not cam.data.pnp_solved:
+                    solving_pnp = True
+                    # undistorted = cv2.undistort(cam.frame.copy(), cam.data.mtx, cam.data.dist)
+                    undistorted = cam.frame.copy()
+                    img = undistorted.copy()
 
-                frame = resize_img(cam.frame, width=960)
-                undistorted = cv2.undistort(frame, cam.data.mtx, cam.data.dist)
-                img = undistorted.copy()
-
-                # region Look for calibration markers in undistorted image
-                found_cmarkers, c_markers = c_marker_finder.find(undistorted)
-                if found_cmarkers:
-                    imgp = np.float32([marker.center for marker in c_markers])
-                else:
-                    imgp = np.float32([])
-                # endregion
-
-                # region Look for markers in undistorted image
-                found_markers, markers = marker_finder.find_markers(undistorted)
-                if found_markers:
-                    for marker in markers:
-                        cv2.circle(img, (int(marker.x), int(marker.y)), 5, (0, 255, 0), -1)
-                self.scene_data[cam.name]["markers"] = markers
-                # endregion
-
-                if len(imgp) == len(objp):
-                    # TODO: Add check to see if solvePnP was already evaluated
-                    # Find the rotation and translation vectors.
-                    pnp_error = cam.data.solve_pnp(objp, imgp)
-                    # TODO: Add checks to see if pnp was solved successfully
-
-                    self.scene_data[cam.name]["pos"] = cam.data.pos
-                    self.scene_data[cam.name]["euler"] = cam.data.euler
-
-                    # region Find marker intersection with z=0 plane
-                    # Where the ray passing through the markers intersects with the z=0 plane
-                    temp_markers_zplane = np.array([])
-
-                    for marker in markers:
-                        P = sfmutils.find_point_zplane(marker.x, marker.y, cam.data)
-
-                        # changing values in another thread must be done immediately
-                        # hence we store it in a temporary array before transferring to the public one
-                        if temp_markers_zplane.shape[0] > 0:
-                            temp_markers_zplane = np.vstack((temp_markers_zplane, P))
-                        else:
-                            temp_markers_zplane = np.array([P])
-
-                        new_points = np.float32([[P[0], P[1], P[2]]])
-                        screen_points, jac = cv2.projectPoints(new_points, cam.data.rvec, cam.data.tvec, cam.data.mtx,
-                                                               None)
-                        backprojection_error = np.linalg.norm(
-                            np.array([screen_points[0].ravel()[0], screen_points[0].ravel()[1]]) - np.array(
-                                [marker.x, marker.y]))
-                        # print "Backprojection Error: {}".format(round(backprojection_error, 3))
-                        center = (int(screen_points[0].ravel()[0]), int(screen_points[0].ravel()[1]))
-                        cv2.circle(img, center, 5, (255, 0, 0), -1)
-
-                    self.scene_data[cam.name]["markers_zplane"] = temp_markers_zplane
+                    # region Look for calibration markers in undistorted image
+                    found_cmarkers, c_markers = c_marker_finder.find(undistorted)
+                    if found_cmarkers:
+                        imgp = np.float32([marker.center for marker in c_markers])
+                    else:
+                        imgp = np.float32([])
                     # endregion
 
-                    grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx,
-                                                          distCoeffs=None)
-                    if np.all(abs(grid_points2) < 1e6):
-                        draw_grid(img, grid_points2, (0, 255, 0))
-                cam.imshow("Visualization", img)
+                    if len(imgp) == len(objp):
+                        # TODO: Add check to see if solvePnP was already evaluated
+                        # Find the rotation and translation vectors.
+                        pnp_error = cam.data.solve_pnp(objp, imgp)
+                        # TODO: Add checks to see if pnp was solved successfully
 
-            markers3d = sfmutils.triangulate([self.scene_data[cam.name]["markers"] for cam in cam_manager.cameras],
-                                             cam_manager.cameras)
-            if "world" not in self.scene_data:
-                self.scene_data["world"] = {}
-            self.scene_data["world"]["markers3d"] = markers3d
+                        print "{} PnP Error: {}".format(cam.name, pnp_error)
+
+                        if pnp_error < 0.3:
+                            cam.data.pnp_solved = True
+                            grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx,
+                                                                  None)
+                            draw_grid(img, grid_points2, (0, 255, 0))
+                    cam.imshow("Visualization", img)
+            if not solving_pnp:
+                self.solved_pnp = True
+                self.quit = True
 
             key = cv2.waitKey(1)
             if key & 0xFF == ord("q"):
                 self.quit = True
 
     def stop(self):
+        if self.solved_pnp:
+            for cam in cam_manager.cameras:
+                if cam.data.pnp_solved:
+                    cam.data.save("camera2/" + cam.name + ".npz")
         self.stop_thread()
 
 
 # height, width
-# TODO: Make grid shape orientation determinable
+# TODO: Make grid shape orientation determinable. e.g using colors in circles
+# TODO: Use new extrinsic calibration method that doesn't need circles
 grid_size = (4, 2)
 # all measurements in mm
 grid_spacing = 162
@@ -454,11 +411,15 @@ for y in xrange(grid_size[0]):
 ipcam_url = "http://192.168.8.100:8080/"
 cam_manager = CamManager([
     # IPCam(ipcam_url, data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
-    ImgCam("img\\cam_rotated.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRotated"),
-    ImgCam("img\\cam_right.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRight"),
-    ImgCam("img\\cam_mid.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamMid"),
-    ImgCam("img\\cam_left.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamLeft"),
-    ImgCam("img\\cam_center.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamCenter")
+    # ImgCam("img\\cam_rotated.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRotated"),
+    # ImgCam("img\\cam_right.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamRight"),
+    # ImgCam("img\\cam_mid.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamMid"),
+    # ImgCam("img\\cam_left.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamLeft"),
+    # ImgCam("img\\cam_center.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamCenter")
+    IPCam("http://192.168.8.103:8080/", data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
+    # IPCam("http://192.168.8.103:8080/", data_filename="camera/samsung-galaxy.npz", name="samsung_galaxy")
+    IPCam("http://192.168.8.101:8080/", data_filename="camera/huawei_y560.npz", name="huawei_y560"),
+    # IPCam("http://192.168.8.100:8080/", data_filename="camera/huawei_y220.npz", name="huawei_y220")
 ])
 cam_manager.start()
 
@@ -468,45 +429,45 @@ marker_finder = MarkerFinder()
 cv_thread = CVThread()
 cv_thread.start()
 
-net_socket = NetworkSocket()
-net_socket.listen()
+# net_socket = NetworkSocket()
+# net_socket.listen()
 
 while True:
-    if net_socket.open:
-        all_data = {
-            "cameras": [],
-            "objp": [],
-            "tri": []
-        }
-        world_scale = 4 / 1000.0
-        for cam in cam_manager.cameras:
-            if cam.name in cv_thread.scene_data:
-                scene_data = cv_thread.scene_data[cam.name]
-                if cam.data.rvec is not None and cam.data.tvec is not None and "pos" in scene_data:
-                    pos = scene_data["pos"]
-                    euler = scene_data["euler"]
-                    pos_world = pos * world_scale
-                    markers_zplane = scene_data["markers_zplane"].reshape(-1, 3)
-                    markers_zplane_world = markers_zplane * world_scale
-
-                    all_data["cameras"].append({
-                        "name": cam.name,
-                        "pos": np.array(pos_world).ravel().tolist(),
-                        "euler": euler.ravel().tolist(),
-                        "markers_zplane": markers_zplane_world.tolist()
-                    })
-        for pt in objp:
-            pt_world = pt * world_scale
-            all_data["objp"].append(pt_world.ravel().tolist())
-        temp_markers3d = cv_thread.scene_data["world"]["markers3d"] * world_scale
-        all_data["markers3d"] = temp_markers3d.tolist()
-        net_socket.send(all_data, is_json=True)
+    # if net_socket.open and cv_thread.markers_found:
+    #     all_data = {
+    #         "cameras": [],
+    #         "objp": [],
+    #         "tri": []
+    #     }
+    #     world_scale = 4 / 1000.0
+    #     for cam in cam_manager.cameras:
+    #         if cam.name in cv_thread.scene_data:
+    #             scene_data = cv_thread.scene_data[cam.name]
+    #             if cam.data.rvec is not None and cam.data.tvec is not None and "pos" in scene_data:
+    #                 pos = scene_data["pos"]
+    #                 euler = scene_data["euler"]
+    #                 pos_world = pos * world_scale
+    #                 markers_zplane = scene_data["markers_zplane"].reshape(-1, 3)
+    #                 markers_zplane_world = markers_zplane * world_scale
+    #
+    #                 all_data["cameras"].append({
+    #                     "name": cam.name,
+    #                     "pos": np.array(pos_world).ravel().tolist(),
+    #                     "euler": euler.ravel().tolist(),
+    #                     "markers_zplane": markers_zplane_world.tolist()
+    #                 })
+    #     for pt in objp:
+    #         pt_world = pt * world_scale
+    #         all_data["objp"].append(pt_world.ravel().tolist())
+    #     temp_markers3d = cv_thread.scene_data["world"]["markers3d"] * world_scale
+    #     all_data["markers3d"] = temp_markers3d.tolist()
+    #     net_socket.send(all_data, is_json=True)
     if cv_thread.quit:
         break
 
 print "Terminating program..."
-net_socket.close()
-print "Network socket closed"
+# net_socket.close()
+# print "Network socket closed"
 cam_manager.stop()
 print "Camera stream stopped"
 cv_thread.stop()
