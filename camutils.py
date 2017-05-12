@@ -19,8 +19,12 @@ class CamData:
         self.rvec = None
         self.tvec = None
 
+        self.pnp_rms = -1
+        self.pnp_solved = False
         self.pos = None
         self.euler = None
+
+        self._to_save = ["rms", "mtx", "dist", "rvec", "tvec", "pnp_rms", "pnp_solved", "pos", "euler"]
 
         self._cache = {}
 
@@ -50,7 +54,12 @@ class CamData:
 
     def save(self, path):
         # TODO: Add assertions for saving camera data
-        np.savez(path, rms=self.rms, mtx=self.mtx, dist=self.dist, rvec=self.rvec, tvec=self.tvec)
+        dict = {}
+        for attr in self._to_save:
+            val = getattr(self, attr)
+            dict[attr] = val
+        # np.savez(path, rms=self.rms, mtx=self.mtx, dist=self.dist, rvec=self.rvec, tvec=self.tvec)
+        np.savez(path, **dict)
         return True
 
     def _cache_get(self, name, func):
@@ -100,13 +109,12 @@ class CamData:
     def proj_mtx(self):
         return self._cache_get("proj_mtx", lambda: np.dot(self.mtx, self.Rt))
 
-    def solve_pnp(self, object_points, image_points):
-        ret, self.rvec, self.tvec, inlears = cv2.solvePnPRansac(object_points.reshape(-1, 3),
-                                                                image_points.reshape(-1, 1, 2), self.mtx,
-                                                                None)
-        object_points_screen, jac = cv2.projectPoints(object_points, self.rvec, self.tvec, self.mtx,
-                                                      distCoeffs=None)
-        error = sfmutils.calc_reprojection_error(object_points_screen, image_points)
+    def update_pnp_data(self, object_points, image_points):
+        """
+        Calculates PnP RMS error and camera position and rotation
+        """
+        object_points_screen, jac = cv2.projectPoints(object_points, self.rvec, self.tvec, self.mtx, None)
+        self.pnp_rms = sfmutils.calc_reprojection_error(object_points_screen, image_points)
 
         r = self.rotation_matrix_transpose()
         self.pos = -np.matrix(r) * np.matrix(self.tvec)
@@ -116,7 +124,27 @@ class CamData:
         roll = math.asin(r[2][0])
         self.euler = np.array([yaw, pitch, roll]) * (180 / math.pi)
 
-        return error
+    def solve_pnp(self, object_points, image_points):
+        ret, self.rvec, self.tvec, inlears = cv2.solvePnPRansac(object_points.reshape(-1, 3),
+                                                                image_points.reshape(-1, 1, 2), self.mtx, None)
+        self.update_pnp_data(object_points, image_points)
+
+        return self.pnp_rms
+
+    def solve_pnp_iterative(self, object_points, image_points):
+        """
+        Currently not used
+        """
+        if self.rvec is not None and self.tvec is not None:
+            ret, self.rvec, self.tvec, inlears = cv2.solvePnPRansac(object_points.reshape(-1, 3),
+                                                                    image_points.reshape(-1, 1, 2), self.mtx, None,
+                                                                    rvec=self.rvec, tvec=self.tvec,
+                                                                    useExtrinsicGuess=True)
+            self.update_pnp_data(object_points, image_points)
+        else:
+            self.solve_pnp(object_points, image_points)
+
+        return self.pnp_rms
 
 
 class CamBase:
