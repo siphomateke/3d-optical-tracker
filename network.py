@@ -54,8 +54,8 @@ class NetworkSocket(ProgramThread):
                     del self.out_buffer[0]
                 except socket.error as err:
                     print "Socket error: {}".format(err)
-                    self.write_list.remove(client)
                     self.read_list.remove(client)
+                    self.write_list.remove(client)
                     self.open = False
 
     def close(self):
