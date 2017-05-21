@@ -336,10 +336,9 @@ class CVThread(ProgramThread):
 
     def run(self):
         if cam_manager.available_cameras > 0:
-            solving_pnp = False
+            num_pnp_solved = 0
             for cam in cam_manager.get_frames():
                 if not cam.data.pnp_solved:
-                    solving_pnp = True
                     # undistorted = cv2.undistort(cam.frame.copy(), cam.data.mtx, cam.data.dist)
                     undistorted = cam.frame.copy()
                     img = undistorted.copy()
@@ -360,13 +359,15 @@ class CVThread(ProgramThread):
 
                         print "{} PnP Error: {}".format(cam.name, pnp_error)
 
-                        if pnp_error < 0.3:
+                        if pnp_error < 1.5:
                             cam.data.pnp_solved = True
                             grid_points2, jac = cv2.projectPoints(grid, cam.data.rvec, cam.data.tvec, cam.data.mtx,
                                                                   None)
                             draw_grid(img, grid_points2, (0, 255, 0))
                     cam.imshow("Visualization", img)
-            if not solving_pnp:
+                else:
+                    num_pnp_solved += 1
+            if num_pnp_solved == len(cam_manager.cameras):
                 self.solved_pnp = True
                 self.quit = True
 
@@ -416,9 +417,10 @@ cam_manager = CamManager([
     # ImgCam("img\\cam_mid.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamMid"),
     # ImgCam("img\\cam_left.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamLeft"),
     # ImgCam("img\\cam_center.jpg", data_filename="camera/LG-K8_scaled2.npz", name="CamCenter")
+
     IPCam("http://192.168.8.103:8080/", data_filename="camera/LG-K8_scaled2.npz", name="LG_K8"),
-    # IPCam("http://192.168.8.103:8080/", data_filename="camera/samsung-galaxy.npz", name="samsung_galaxy")
-    IPCam("http://192.168.8.101:8080/", data_filename="camera/huawei_y560.npz", name="huawei_y560"),
+    # IPCam("http://192.168.8.106:8080/", data_filename="camera/samsung-galaxy.npz", name="samsung_galaxy")
+    # IPCam("http://192.168.8.101:8080/", data_filename="camera/huawei_y560.npz", name="huawei_y560"),
     # IPCam("http://192.168.8.100:8080/", data_filename="camera/huawei_y220.npz", name="huawei_y220")
 ])
 cam_manager.start()
@@ -433,35 +435,6 @@ cv_thread.start()
 # net_socket.listen()
 
 while True:
-    # if net_socket.open and cv_thread.markers_found:
-    #     all_data = {
-    #         "cameras": [],
-    #         "objp": [],
-    #         "tri": []
-    #     }
-    #     world_scale = 4 / 1000.0
-    #     for cam in cam_manager.cameras:
-    #         if cam.name in cv_thread.scene_data:
-    #             scene_data = cv_thread.scene_data[cam.name]
-    #             if cam.data.rvec is not None and cam.data.tvec is not None and "pos" in scene_data:
-    #                 pos = scene_data["pos"]
-    #                 euler = scene_data["euler"]
-    #                 pos_world = pos * world_scale
-    #                 markers_zplane = scene_data["markers_zplane"].reshape(-1, 3)
-    #                 markers_zplane_world = markers_zplane * world_scale
-    #
-    #                 all_data["cameras"].append({
-    #                     "name": cam.name,
-    #                     "pos": np.array(pos_world).ravel().tolist(),
-    #                     "euler": euler.ravel().tolist(),
-    #                     "markers_zplane": markers_zplane_world.tolist()
-    #                 })
-    #     for pt in objp:
-    #         pt_world = pt * world_scale
-    #         all_data["objp"].append(pt_world.ravel().tolist())
-    #     temp_markers3d = cv_thread.scene_data["world"]["markers3d"] * world_scale
-    #     all_data["markers3d"] = temp_markers3d.tolist()
-    #     net_socket.send(all_data, is_json=True)
     if cv_thread.quit:
         break
 
