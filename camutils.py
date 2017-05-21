@@ -74,6 +74,13 @@ class CamData:
         return self._cache[name]
 
     @property
+    def calibrated(self):
+        if self.mtx is not None and self.mtx.shape == (3, 3):
+            return True
+        else:
+            return False
+
+    @property
     def fx(self):
         return self.mtx[0][0]
 
