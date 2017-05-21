@@ -17,7 +17,8 @@ objp *= chessboard_square_size
 objpoints = []  # 3d point in real world space
 imgpoints = []  # 2d points in image plane.
 
-camera_name = "LG-K8"
+camera_name = "huawei_y220"
+camera_url = "http://192.168.8.100:8080/"
 
 
 def run(frame, save_img, calibrate):
@@ -35,6 +36,7 @@ def run(frame, save_img, calibrate):
 
     if calibrate:
         print "Calibrating camera..."
+        cv2.destroyAllWindows()
         ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None,
                                                            flags=cv2.CALIB_FIX_ASPECT_RATIO)
         print "RMS : {}".format(ret)
@@ -46,7 +48,7 @@ def run(frame, save_img, calibrate):
 
 
 def main():
-    cam = camutils.IPCam("http://192.168.8.100:8080/")
+    cam = camutils.IPCam(camera_url)
     cam.start()
 
     if cam.ready:
